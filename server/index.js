@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import * as cheerio from 'cheerio';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -100,12 +101,17 @@ const API_RATE_LIMIT_BUCKET_CAP = parsePositiveInt(process.env.API_RATE_LIMIT_BU
 const CORS_MAX_AGE_SECONDS = parsePositiveInt(process.env.CORS_MAX_AGE_SECONDS, 600);
 const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.ALLOWED_ORIGINS ?? '');
 const TRUST_PROXY = parseTrustProxy(process.env.TRUST_PROXY);
+const REQUEST_ID_HEADER_NAME = 'x-request-id';
+const REQUEST_ID_MAX_LENGTH = 128;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const app = express();
 app.disable('x-powered-by');
 if (TRUST_PROXY !== false) {
   app.set('trust proxy', TRUST_PROXY);
 }
+app.use(assignRequestId);
+app.use('/api', applyApiNoStoreHeaders);
 app.use(helmet(buildHelmetOptions()));
 app.use(cors(corsOptionsDelegate));
 app.use('/api', enforceApiOriginAllowlist);
@@ -150,6 +156,88 @@ function parseTrustProxy(rawValue) {
   }
 
   return text;
+}
+
+function normalizeRequestId(rawValue) {
+  const text = String(rawValue ?? '').trim();
+  if (!text || text.length > REQUEST_ID_MAX_LENGTH) {
+    return '';
+  }
+  if (!/^[A-Za-z0-9._:-]+$/.test(text)) {
+    return '';
+  }
+  return text;
+}
+
+function assignRequestId(req, res, next) {
+  const rawHeaderValue = req.headers?.[REQUEST_ID_HEADER_NAME];
+  const incomingRequestId = normalizeRequestId(Array.isArray(rawHeaderValue) ? rawHeaderValue[0] : rawHeaderValue);
+  const requestId = incomingRequestId || crypto.randomUUID();
+
+  req.requestId = requestId;
+  res.locals.requestId = requestId;
+  res.set('X-Request-Id', requestId);
+  next();
+}
+
+function applyApiNoStoreHeaders(_req, res, next) {
+  res.set('Cache-Control', 'no-store');
+  res.set('Pragma', 'no-cache');
+  next();
+}
+
+function requestIdFrom(req, res) {
+  return normalizeRequestId(res.locals?.requestId ?? req.requestId ?? '');
+}
+
+function buildJsonErrorBody(req, res, errorMessage) {
+  const requestId = requestIdFrom(req, res);
+  if (requestId) {
+    return {
+      error: errorMessage,
+      requestId,
+    };
+  }
+  return { error: errorMessage };
+}
+
+function sendJsonError(req, res, statusCode, errorMessage) {
+  return res.status(statusCode).json(buildJsonErrorBody(req, res, errorMessage));
+}
+
+function unknownServerErrorMessage(error) {
+  if (IS_PRODUCTION) {
+    return 'Internal server error.';
+  }
+  return error instanceof Error ? error.message : 'Unknown server error';
+}
+
+function serializeErrorForLog(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+  return {
+    message: String(error),
+  };
+}
+
+function logApiServerError(req, res, routeLabel, error) {
+  const payload = {
+    level: 'error',
+    event: 'api_request_failed',
+    route: routeLabel,
+    method: req.method,
+    path: req.originalUrl,
+    requestId: requestIdFrom(req, res),
+    timestamp: new Date().toISOString(),
+    error: serializeErrorForLog(error),
+  };
+  // eslint-disable-next-line no-console
+  console.error(JSON.stringify(payload));
 }
 
 function normalizeOrigin(originText) {
@@ -236,9 +324,7 @@ function enforceApiOriginAllowlist(req, res, next) {
     return next();
   }
 
-  return res.status(403).json({
-    error: 'Origin not allowed by CORS policy.',
-  });
+  return sendJsonError(req, res, 403, 'Origin not allowed by CORS policy.');
 }
 
 function buildHelmetOptions() {
@@ -351,9 +437,12 @@ function createRateLimiter({ routeLabel, maxRequests, windowMs }) {
     if (bucket.count > maxRequests) {
       const retryAfterSec = Math.max(1, Math.ceil((resetAtMs - now) / 1000));
       res.set('Retry-After', String(retryAfterSec));
-      return res.status(429).json({
-        error: `Rate limit exceeded for ${routeLabel}. Max ${maxRequests} requests per ${Math.ceil(windowMs / 1000)} seconds.`,
-      });
+      return sendJsonError(
+        req,
+        res,
+        429,
+        `Rate limit exceeded for ${routeLabel}. Max ${maxRequests} requests per ${Math.ceil(windowMs / 1000)} seconds.`
+      );
     }
 
     return next();
@@ -1863,11 +1952,11 @@ app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
     const termId = cleanText(req.query?.termId) || '202601';
 
     if (!/^\d+$/.test(campId)) {
-      return res.status(400).json({ error: 'campId must be numeric.' });
+      return sendJsonError(req, res, 400, 'campId must be numeric.');
     }
 
     if (!/^\d{6}$/.test(termId)) {
-      return res.status(400).json({ error: 'termId must be a 6-digit numeric value.' });
+      return sendJsonError(req, res, 400, 'termId must be a 6-digit numeric value.');
     }
 
     const rawSourceUrl = `https://my.gwu.edu/mod/pws/subjects.cfm?campId=${encodeURIComponent(
@@ -1875,16 +1964,16 @@ app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
     )}&termId=${encodeURIComponent(termId)}`;
     const validatedSourceUrl = validateSubjectsSourceUrl(rawSourceUrl);
     if (!validatedSourceUrl.url) {
-      return res.status(400).json({ error: validatedSourceUrl.error ?? 'Invalid subjects URL.' });
+      return sendJsonError(req, res, 400, validatedSourceUrl.error ?? 'Invalid subjects URL.');
     }
     const fetchResult = await fetchSubjectsWithValidatedRedirects(validatedSourceUrl.url.toString());
     if (!fetchResult.response) {
-      return res.status(502).json({ error: fetchResult.error ?? 'Failed to load subjects from GW.' });
+      return sendJsonError(req, res, 502, fetchResult.error ?? 'Failed to load subjects from GW.');
     }
     const { response, finalUrl } = fetchResult;
 
     if (!response.ok) {
-      return res.status(502).json({ error: `GW returned HTTP ${response.status} while loading subjects.` });
+      return sendJsonError(req, res, 502, `GW returned HTTP ${response.status} while loading subjects.`);
     }
 
     const html = await readResponseTextWithLimit(response, UPSTREAM_MAX_RESPONSE_BYTES);
@@ -1893,9 +1982,7 @@ app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
     if (subjects.length === 0) {
       const campusLabel = CAMPUS_LABELS[campId] ?? `Campus ${campId}`;
       const termLabel = TERM_LABELS[termId] ?? `Term ${termId}`;
-      return res.status(422).json({
-        error: `No subjects are currently published for ${termLabel} at ${campusLabel}.`,
-      });
+      return sendJsonError(req, res, 422, `No subjects are currently published for ${termLabel} at ${campusLabel}.`);
     }
 
     return res.json({
@@ -1912,12 +1999,13 @@ app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
     });
   } catch (error) {
     if (error instanceof UpstreamTimeoutError) {
-      return res.status(504).json({ error: error.message });
+      return sendJsonError(req, res, 504, error.message);
     }
     if (error instanceof UpstreamResponseTooLargeError) {
-      return res.status(502).json({ error: error.message });
+      return sendJsonError(req, res, 502, error.message);
     }
-    return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown server error' });
+    logApiServerError(req, res, '/api/subjects', error);
+    return sendJsonError(req, res, 500, unknownServerErrorMessage(error));
   }
 });
 
@@ -1925,43 +2013,46 @@ app.post('/api/parse-url', parseUrlRateLimiter, async (req, res) => {
   try {
     const rawUrl = cleanText(req.body?.url);
     if (!rawUrl) {
-      return res.status(400).json({ error: 'Request body must include a non-empty url field.' });
+      return sendJsonError(req, res, 400, 'Request body must include a non-empty url field.');
     }
 
     const validatedUrl = validateScheduleSourceUrl(rawUrl);
     if (!validatedUrl.url) {
-      return res.status(400).json({ error: validatedUrl.error ?? 'Invalid URL.' });
+      return sendJsonError(req, res, 400, validatedUrl.error ?? 'Invalid URL.');
     }
 
     const fetchResult = await fetchScheduleWithValidatedRedirects(validatedUrl.url.toString());
     if (!fetchResult.response) {
-      return res.status(502).json({ error: fetchResult.error ?? 'Failed to fetch the GW schedule page.' });
+      return sendJsonError(req, res, 502, fetchResult.error ?? 'Failed to fetch the GW schedule page.');
     }
     const { response, finalUrl } = fetchResult;
 
     if (!response.ok) {
-      return res.status(502).json({ error: `GW returned HTTP ${response.status}.` });
+      return sendJsonError(req, res, 502, `GW returned HTTP ${response.status}.`);
     }
 
     const html = await readResponseTextWithLimit(response, UPSTREAM_MAX_RESPONSE_BYTES);
     const parsed = parseAndMerge(html, finalUrl);
 
     if (parsed.courses.length === 0) {
-      return res.status(422).json({
-        error:
-          'No classes are currently published for this selection. Try a different term, campus, or subject.',
-      });
+      return sendJsonError(
+        req,
+        res,
+        422,
+        'No classes are currently published for this selection. Try a different term, campus, or subject.'
+      );
     }
 
     return res.json(parsed);
   } catch (error) {
     if (error instanceof UpstreamTimeoutError) {
-      return res.status(504).json({ error: error.message });
+      return sendJsonError(req, res, 504, error.message);
     }
     if (error instanceof UpstreamResponseTooLargeError) {
-      return res.status(502).json({ error: error.message });
+      return sendJsonError(req, res, 502, error.message);
     }
-    return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown server error' });
+    logApiServerError(req, res, '/api/parse-url', error);
+    return sendJsonError(req, res, 500, unknownServerErrorMessage(error));
   }
 });
 

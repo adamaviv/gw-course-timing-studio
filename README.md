@@ -92,6 +92,8 @@ npm run test:security-phase3
 npm run test:security-phase4
 npm run test:security-phase5
 npm run test:security-phase6
+npm run test:security-phase7
+npm run test:security-phase8
 ```
 
 Each suite prints test descriptions with explicit `PASS`/`FAIL` status and exits non-zero on failure.
@@ -119,5 +121,7 @@ Response contains:
 
 - The backend intentionally fetches GW pages server-side to avoid browser CORS issues.
 - API requests now enforce a strict origin allowlist via `ALLOWED_ORIGINS` and apply security headers via `helmet`.
+- API responses now include an `x-request-id` header; error bodies include `requestId` for traceability.
+- Production 500 responses are intentionally generic (`Internal server error.`) to avoid leaking internals.
 - Subject options are loaded dynamically from GW `subjects.cfm` for the selected `termId` + `campId`.
 - Courses without parseable meeting times (e.g., ARR/TBA) are excluded from results.
