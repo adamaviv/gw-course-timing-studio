@@ -460,6 +460,22 @@ button:disabled {
   font-weight: 700;
 }
 
+.detail-action-row {
+  margin: 0.25rem 0 0.45rem;
+}
+
+.detail-unselect-button {
+  background: #8a2b2b;
+  color: #fff;
+  border-radius: 8px;
+  padding: 0.4rem 0.62rem;
+  font-size: 0.78rem;
+}
+
+.detail-unselect-button:hover {
+  background: #752424;
+}
+
 .detail-meta {
   margin: 0.2rem 0;
   color: #2f4a54;

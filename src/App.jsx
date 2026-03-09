@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 
 // Update these defaults each scheduling cycle.
 const DEFAULT_SELECTION = {
@@ -183,6 +184,30 @@ function listingSummary(course) {
       return `${detail.courseNumber}: ${sectionText}, ${crnText}`;
     })
     .join(' | ');
+}
+
+function courseLabelWithCrn(course, courseNumber) {
+  const normalizedCourseNumber = String(courseNumber || '').trim().toUpperCase();
+  if (!normalizedCourseNumber) {
+    return 'Course';
+  }
+
+  const matchingCrns = [
+    ...new Set(
+      registrationDetailsForCourse(course)
+        .filter((detail) => String(detail.courseNumber || '').trim().toUpperCase() === normalizedCourseNumber)
+        .flatMap((detail) => detail.crns ?? [])
+        .map((crn) => String(crn || '').trim())
+        .filter(Boolean)
+    ),
+  ];
+
+  if (matchingCrns.length === 0) {
+    return courseNumber;
+  }
+
+  const crnText = matchingCrns.length === 1 ? `CRN ${matchingCrns[0]}` : `CRNs ${matchingCrns.join(', ')}`;
+  return `${courseNumber} (${crnText})`;
 }
 
 function commentEntriesForCourse(course) {
@@ -665,6 +690,11 @@ function App() {
     () => courses.find((course) => course.id === activeCourseId) ?? null,
     [courses, activeCourseId]
   );
+  const isActiveCourseSelected = useMemo(
+    () => Boolean(activeCourse && selectedIds.has(activeCourse.id)),
+    [activeCourse, selectedIds]
+  );
+  const activeCourseDetailUrl = activeCourse ? sanitizeDetailUrl(activeCourse.detailUrl) : '';
 
   const calendar = useMemo(
     () => buildCalendar(selectedCourses, activeCourseId),
@@ -722,6 +752,18 @@ function App() {
   function closeCourseDetails() {
     setActiveCourseId(null);
     setDetailPosition(null);
+  }
+
+  function unselectActiveCourseFromModal() {
+    if (!activeCourseId) {
+      return;
+    }
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(activeCourseId);
+      return next;
+    });
+    closeCourseDetails();
   }
 
   function openCourseDetails(courseId, anchorElement) {
@@ -854,6 +896,24 @@ function App() {
     });
   }
 
+  function selectLinkedForParent(parentId) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const linkedCourses = linkedChildrenByParentId.get(parentId) ?? [];
+      linkedCourses.filter((course) => isSchedulableCourse(course)).forEach((course) => next.add(course.id));
+      return next;
+    });
+  }
+
+  function unselectLinkedForParent(parentId) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const linkedCourses = linkedChildrenByParentId.get(parentId) ?? [];
+      linkedCourses.forEach((course) => next.delete(course.id));
+      return next;
+    });
+  }
+
   function selectAllInFrame(frameKey) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -957,6 +1017,12 @@ function App() {
     const { showLinkedToggle = true } = options;
     const course = row.course;
     const courseCancelled = isCancelledCourse(course);
+    const linkedCourses = !row.isLinked ? linkedChildrenByParentId.get(course.id) ?? [] : [];
+    const linkedSchedulableCount = linkedCourses.filter((linkedCourse) => isSchedulableCourse(linkedCourse)).length;
+    const linkedSchedulableSelectedCount = linkedCourses.filter(
+      (linkedCourse) => isSchedulableCourse(linkedCourse) && selectedIds.has(linkedCourse.id)
+    ).length;
+    const linkedSelectedCount = linkedCourses.filter((linkedCourse) => selectedIds.has(linkedCourse.id)).length;
 
     return (
       <label
@@ -1009,17 +1075,45 @@ function App() {
           <p className="course-meeting">{summarizeMeetings(course)}</p>
           <div className="course-actions-row">
             {showLinkedToggle && !row.isLinked && row.linkedCount > 0 ? (
-              <button
-                type="button"
-                className="course-info-link"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  toggleLinkedForParent(course.id);
-                }}
-              >
-                {row.linkedExpanded ? 'Hide Linked' : 'Show Linked'}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="course-info-link"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    selectLinkedForParent(course.id);
+                  }}
+                  disabled={
+                    linkedSchedulableCount === 0 || linkedSchedulableSelectedCount === linkedSchedulableCount
+                  }
+                >
+                  Select Linked
+                </button>
+                <button
+                  type="button"
+                  className="course-info-link"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    unselectLinkedForParent(course.id);
+                  }}
+                  disabled={linkedSelectedCount === 0}
+                >
+                  Unselect Linked
+                </button>
+                <button
+                  type="button"
+                  className="course-info-link"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    toggleLinkedForParent(course.id);
+                  }}
+                >
+                  {row.linkedExpanded ? 'Hide Linked' : 'Show Linked'}
+                </button>
+              </>
             ) : null}
           </div>
         </div>
@@ -1031,7 +1125,7 @@ function App() {
     <div className="app-shell">
       <header className="top-panel">
         <div>
-          <h1>GW Course Timing Studio</h1>
+          <h1>GW Course Studio</h1>
           <p>
             Select term, campus, and subject to load the GW Schedule of Classes and compare selected sections on a
             weekly calendar.
@@ -1384,6 +1478,17 @@ function App() {
               </button>
             </div>
             <p className="detail-course-name">{activeCourse.title}</p>
+            {isActiveCourseSelected ? (
+              <div className="detail-action-row">
+                <button
+                  type="button"
+                  className="detail-unselect-button"
+                  onClick={unselectActiveCourseFromModal}
+                >
+                  Unselect from Calendar
+                </button>
+              </div>
+            ) : null}
             <p className="detail-meta">
               <strong>Status:</strong> {activeCourse.status} | <strong>{crnSummary(activeCourse)}</strong> |{' '}
               <strong>Credits:</strong> {activeCourse.credits || 'N/A'}
@@ -1397,7 +1502,7 @@ function App() {
                 <ul>
                   {instructorEntriesForCourse(activeCourse).map((entry) => (
                     <li key={`${entry.courseNumber}|${entry.instructor}`}>
-                      <strong>{entry.courseNumber}:</strong> {entry.instructor}
+                      <strong>{courseLabelWithCrn(activeCourse, entry.courseNumber)}:</strong> {entry.instructor}
                     </li>
                   ))}
                 </ul>
@@ -1412,7 +1517,7 @@ function App() {
                 <ul>
                   {titleEntriesForCourse(activeCourse).map((entry) => (
                     <li key={`${entry.courseNumber}|${entry.title}`}>
-                      <strong>{entry.courseNumber}:</strong> {entry.title}
+                      <strong>{courseLabelWithCrn(activeCourse, entry.courseNumber)}:</strong> {entry.title}
                     </li>
                   ))}
                 </ul>
@@ -1431,15 +1536,15 @@ function App() {
                 <ul>
                   {commentEntriesForCourse(activeCourse).map((entry) => (
                     <li key={`${entry.courseNumber}|${entry.text}`}>
-                      <strong>{entry.courseNumber}:</strong> {entry.text}
+                      <strong>{courseLabelWithCrn(activeCourse, entry.courseNumber)}:</strong> {entry.text}
                     </li>
                   ))}
                 </ul>
               </div>
             ) : null}
-            {activeCourse.detailUrl ? (
+            {activeCourseDetailUrl ? (
               <div className="detail-links">
-                <a href={activeCourse.detailUrl} target="_blank" rel="noreferrer">
+                <a href={activeCourseDetailUrl} target="_blank" rel="noreferrer">
                   Course Catalog Link
                 </a>
               </div>
