@@ -8,12 +8,13 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "NODE_ENV=production node server/index.js",
-    "test": "npm run test:security-phase1 && npm run test:security-phase2 && npm run test:security-phase3 && npm run test:security-phase4 && npm run test:security-phase5",
+    "test": "npm run test:security-phase1 && npm run test:security-phase2 && npm run test:security-phase3 && npm run test:security-phase4 && npm run test:security-phase5 && npm run test:security-phase6",
     "test:security-phase1": "node scripts/security-phase1-tests.mjs",
     "test:security-phase2": "node scripts/security-phase2-tests.mjs",
     "test:security-phase3": "node scripts/security-phase3-tests.mjs",
     "test:security-phase4": "node scripts/security-phase4-tests.mjs",
-    "test:security-phase5": "node scripts/security-phase5-tests.mjs"
+    "test:security-phase5": "node scripts/security-phase5-tests.mjs",
+    "test:security-phase6": "node scripts/security-phase6-tests.mjs"
   },
   "dependencies": {
     "cheerio": "^1.1.2",

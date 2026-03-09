@@ -91,6 +91,7 @@ npm run test:security-phase2
 npm run test:security-phase3
 npm run test:security-phase4
 npm run test:security-phase5
+npm run test:security-phase6
 ```
 
 Each suite prints test descriptions with explicit `PASS`/`FAIL` status and exits non-zero on failure.

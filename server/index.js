@@ -85,6 +85,10 @@ const DAY_NAMES = {
 const PARSE_URL_ALLOWED_HOST = 'my.gwu.edu';
 const PARSE_URL_ALLOWED_PATHS = new Set(['/mod/pws/print.cfm', '/mod/pws/courses.cfm']);
 const PARSE_URL_ALLOWED_QUERY_KEYS = new Set(['campId', 'termId', 'subjId']);
+const SUBJECTS_URL_ALLOWED_PATH = '/mod/pws/subjects.cfm';
+const SUBJECTS_URL_ALLOWED_QUERY_KEYS = new Set(['campId', 'termId']);
+const SUBJECTS_LINK_ALLOWED_PATH = '/mod/pws/courses.cfm';
+const SUBJECTS_LINK_ALLOWED_QUERY_KEYS = new Set(['campId', 'termId', 'subjId']);
 const PARSE_URL_REDIRECT_LIMIT = 3;
 const REQUEST_USER_AGENT = 'class-schedule-visualizer/1.0';
 const UPSTREAM_FETCH_TIMEOUT_MS = parsePositiveInt(process.env.UPSTREAM_FETCH_TIMEOUT_MS, 10_000);
@@ -883,6 +887,10 @@ function parseTermLabel(url, fullPageText) {
   return termId ? `Term ${termId}` : 'Unknown Term';
 }
 
+function isValidSubjectId(subjectId) {
+  return /^[A-Z0-9]{1,8}$/.test(subjectId);
+}
+
 function validateScheduleSourceUrl(rawUrl) {
   let parsedUrl;
   try {
@@ -934,7 +942,7 @@ function validateScheduleSourceUrl(rawUrl) {
     return { error: 'termId must be a 6-digit numeric value.' };
   }
 
-  if (!/^[A-Z0-9]{1,8}$/.test(subjectId)) {
+  if (!isValidSubjectId(subjectId)) {
     return { error: 'subjId must be 1-8 alphanumeric characters.' };
   }
 
@@ -943,6 +951,65 @@ function validateScheduleSourceUrl(rawUrl) {
     campId,
     termId,
     subjId: subjectId,
+  }).toString();
+  canonicalUrl.hash = '';
+
+  return { url: canonicalUrl };
+}
+
+function validateSubjectsSourceUrl(rawUrl) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(cleanText(rawUrl));
+  } catch {
+    return { error: 'Invalid URL.' };
+  }
+
+  if (parsedUrl.protocol !== 'https:') {
+    return { error: 'Only HTTPS my.gwu.edu subjects pages are supported.' };
+  }
+
+  if (parsedUrl.hostname !== PARSE_URL_ALLOWED_HOST) {
+    return { error: 'Only my.gwu.edu subjects pages are supported.' };
+  }
+
+  if (parsedUrl.username || parsedUrl.password || parsedUrl.port) {
+    return { error: 'URL must not include credentials or a custom port.' };
+  }
+
+  const normalizedPath = parsedUrl.pathname.toLowerCase();
+  if (normalizedPath !== SUBJECTS_URL_ALLOWED_PATH) {
+    return { error: 'URL must point to /mod/pws/subjects.cfm.' };
+  }
+
+  for (const key of parsedUrl.searchParams.keys()) {
+    if (!SUBJECTS_URL_ALLOWED_QUERY_KEYS.has(key)) {
+      return { error: `Unsupported query parameter: ${key}.` };
+    }
+  }
+
+  const campIds = parsedUrl.searchParams.getAll('campId').map((value) => cleanText(value)).filter(Boolean);
+  const termIds = parsedUrl.searchParams.getAll('termId').map((value) => cleanText(value)).filter(Boolean);
+
+  if (campIds.length !== 1 || termIds.length !== 1) {
+    return { error: 'URL must include exactly one campId and termId parameter.' };
+  }
+
+  const campId = campIds[0];
+  const termId = termIds[0];
+
+  if (!/^\d+$/.test(campId)) {
+    return { error: 'campId must be numeric.' };
+  }
+
+  if (!/^\d{6}$/.test(termId)) {
+    return { error: 'termId must be a 6-digit numeric value.' };
+  }
+
+  const canonicalUrl = new URL(parsedUrl.toString());
+  canonicalUrl.search = new URLSearchParams({
+    campId,
+    termId,
   }).toString();
   canonicalUrl.hash = '';
 
@@ -980,6 +1047,49 @@ async function fetchScheduleWithValidatedRedirects(startUrl) {
       const validatedRedirect = validateScheduleSourceUrl(resolvedUrl);
       if (!validatedRedirect.url) {
         return { error: validatedRedirect.error ?? 'GW redirected to a non-allowed schedule URL.' };
+      }
+
+      currentUrl = validatedRedirect.url.toString();
+      continue;
+    }
+
+    return { response, finalUrl: currentUrl };
+  }
+
+  return { error: `Too many redirects (max ${PARSE_URL_REDIRECT_LIMIT}).` };
+}
+
+async function fetchSubjectsWithValidatedRedirects(startUrl) {
+  let currentUrl = startUrl;
+
+  for (let redirectCount = 0; redirectCount <= PARSE_URL_REDIRECT_LIMIT; redirectCount += 1) {
+    const response = await fetchWithTimeout(
+      currentUrl,
+      {
+        redirect: 'manual',
+        headers: {
+          'User-Agent': REQUEST_USER_AGENT,
+        },
+      },
+      UPSTREAM_FETCH_TIMEOUT_MS
+    );
+
+    if (response.status >= 300 && response.status < 400) {
+      const locationHeader = cleanText(response.headers.get('location'));
+      if (!locationHeader) {
+        return { error: 'GW returned a redirect without a location header.' };
+      }
+
+      let resolvedUrl;
+      try {
+        resolvedUrl = new URL(locationHeader, currentUrl).toString();
+      } catch {
+        return { error: 'GW returned an invalid redirect location.' };
+      }
+
+      const validatedRedirect = validateSubjectsSourceUrl(resolvedUrl);
+      if (!validatedRedirect.url) {
+        return { error: validatedRedirect.error ?? 'GW redirected to a non-allowed subjects URL.' };
       }
 
       currentUrl = validatedRedirect.url.toString();
@@ -1704,12 +1814,35 @@ function parseSubjectsFromHtml(html, rawUrl) {
       return;
     }
 
-    if (!/\/mod\/pws\/courses\.cfm$/i.test(linkUrl.pathname)) {
+    if (!['http:', 'https:'].includes(linkUrl.protocol)) {
       return;
     }
 
-    const subjectId = cleanText(linkUrl.searchParams.get('subjId')).toUpperCase();
-    if (!subjectId) {
+    if (linkUrl.hostname.toLowerCase() !== PARSE_URL_ALLOWED_HOST) {
+      return;
+    }
+
+    if (linkUrl.username || linkUrl.password || linkUrl.port) {
+      return;
+    }
+
+    if (linkUrl.pathname.toLowerCase() !== SUBJECTS_LINK_ALLOWED_PATH) {
+      return;
+    }
+
+    for (const key of linkUrl.searchParams.keys()) {
+      if (!SUBJECTS_LINK_ALLOWED_QUERY_KEYS.has(key)) {
+        return;
+      }
+    }
+
+    const subjectIds = linkUrl.searchParams.getAll('subjId').map((value) => cleanText(value)).filter(Boolean);
+    if (subjectIds.length !== 1) {
+      return;
+    }
+
+    const subjectId = subjectIds[0].toUpperCase();
+    if (!isValidSubjectId(subjectId)) {
       return;
     }
 
@@ -1729,29 +1862,33 @@ app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
     const campId = cleanText(req.query?.campId) || '1';
     const termId = cleanText(req.query?.termId) || '202601';
 
-    if (!/^\d+$/.test(campId) || !/^\d+$/.test(termId)) {
-      return res.status(400).json({ error: 'campId and termId must be numeric.' });
+    if (!/^\d+$/.test(campId)) {
+      return res.status(400).json({ error: 'campId must be numeric.' });
     }
 
-    const sourceUrl = `https://my.gwu.edu/mod/pws/subjects.cfm?campId=${encodeURIComponent(campId)}&termId=${encodeURIComponent(
-      termId
-    )}`;
-    const response = await fetchWithTimeout(
-      sourceUrl,
-      {
-        headers: {
-          'User-Agent': REQUEST_USER_AGENT,
-        },
-      },
-      UPSTREAM_FETCH_TIMEOUT_MS
-    );
+    if (!/^\d{6}$/.test(termId)) {
+      return res.status(400).json({ error: 'termId must be a 6-digit numeric value.' });
+    }
+
+    const rawSourceUrl = `https://my.gwu.edu/mod/pws/subjects.cfm?campId=${encodeURIComponent(
+      campId
+    )}&termId=${encodeURIComponent(termId)}`;
+    const validatedSourceUrl = validateSubjectsSourceUrl(rawSourceUrl);
+    if (!validatedSourceUrl.url) {
+      return res.status(400).json({ error: validatedSourceUrl.error ?? 'Invalid subjects URL.' });
+    }
+    const fetchResult = await fetchSubjectsWithValidatedRedirects(validatedSourceUrl.url.toString());
+    if (!fetchResult.response) {
+      return res.status(502).json({ error: fetchResult.error ?? 'Failed to load subjects from GW.' });
+    }
+    const { response, finalUrl } = fetchResult;
 
     if (!response.ok) {
       return res.status(502).json({ error: `GW returned HTTP ${response.status} while loading subjects.` });
     }
 
     const html = await readResponseTextWithLimit(response, UPSTREAM_MAX_RESPONSE_BYTES);
-    const subjects = parseSubjectsFromHtml(html, sourceUrl);
+    const subjects = parseSubjectsFromHtml(html, finalUrl);
 
     if (subjects.length === 0) {
       const campusLabel = CAMPUS_LABELS[campId] ?? `Campus ${campId}`;
@@ -1763,7 +1900,7 @@ app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
 
     return res.json({
       meta: {
-        sourceUrl,
+        sourceUrl: finalUrl,
         campId,
         campusLabel: CAMPUS_LABELS[campId] ?? `Campus ${campId}`,
         termId,
