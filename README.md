@@ -25,6 +25,38 @@ npm run dev
 - App + API: `http://localhost:8787`
 - API endpoint: `http://localhost:8787/api/parse-url`
 
+## Environment variables
+
+Copy `.env.example` to `.env` for local development:
+
+```bash
+cp .env.example .env
+```
+
+Supported settings:
+
+- `ALLOWED_ORIGINS`: Comma-separated frontend origin allowlist for API CORS checks
+- `CORS_MAX_AGE_SECONDS`: Preflight cache time
+- `UPSTREAM_FETCH_TIMEOUT_MS`: Timeout for upstream GW fetches
+- `UPSTREAM_MAX_RESPONSE_BYTES`: Max upstream response size accepted before parsing
+- `API_RATE_LIMIT_WINDOW_MS`: Rate-limit window size
+- `API_RATE_LIMIT_PARSE_MAX`: Max `/api/parse-url` requests per window per client
+- `API_RATE_LIMIT_SUBJECTS_MAX`: Max `/api/subjects` requests per window per client
+
+Default local values in `.env.example`:
+
+```dotenv
+ALLOWED_ORIGINS=http://localhost:8787,http://127.0.0.1:8787
+CORS_MAX_AGE_SECONDS=600
+UPSTREAM_FETCH_TIMEOUT_MS=10000
+UPSTREAM_MAX_RESPONSE_BYTES=2097152
+API_RATE_LIMIT_WINDOW_MS=60000
+API_RATE_LIMIT_PARSE_MAX=30
+API_RATE_LIMIT_SUBJECTS_MAX=60
+```
+
+For local testing, `.env` in this repo is configured with localhost origins and moderate limits.
+
 ## Production-style run
 
 ```bash
@@ -38,6 +70,25 @@ npm start
 - built frontend from `dist/`
 
 The server binds to `process.env.PORT` (defaults to `8787`), which matches Firebase/App Hosting and Cloud Run style deployments.
+
+## Security testing
+
+Run all security suites:
+
+```bash
+npm test
+```
+
+Run suites individually:
+
+```bash
+npm run test:security-phase1
+npm run test:security-phase2
+npm run test:security-phase3
+npm run test:security-phase4
+```
+
+Each suite prints test descriptions with explicit `PASS`/`FAIL` status and exits non-zero on failure.
 
 ## API
 
@@ -61,5 +112,6 @@ Response contains:
 ## Notes
 
 - The backend intentionally fetches GW pages server-side to avoid browser CORS issues.
+- API requests now enforce a strict origin allowlist via `ALLOWED_ORIGINS` and apply security headers via `helmet`.
 - Subject options are loaded dynamically from GW `subjects.cfm` for the selected `termId` + `campId`.
 - Courses without parseable meeting times (e.g., ARR/TBA) are excluded from results.

@@ -1,11 +1,20 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import * as cheerio from 'cheerio';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
+
+try {
+  if (typeof process.loadEnvFile === 'function') {
+    process.loadEnvFile('.env');
+  }
+} catch {
+  // .env is optional in local/dev environments.
+}
 
 const TERM_LABELS = {
   '202702': 'Summer 2027',
@@ -83,9 +92,13 @@ const UPSTREAM_MAX_RESPONSE_BYTES = parsePositiveInt(process.env.UPSTREAM_MAX_RE
 const API_RATE_LIMIT_WINDOW_MS = parsePositiveInt(process.env.API_RATE_LIMIT_WINDOW_MS, 60_000);
 const API_RATE_LIMIT_PARSE_MAX = parsePositiveInt(process.env.API_RATE_LIMIT_PARSE_MAX, 30);
 const API_RATE_LIMIT_SUBJECTS_MAX = parsePositiveInt(process.env.API_RATE_LIMIT_SUBJECTS_MAX, 60);
+const CORS_MAX_AGE_SECONDS = parsePositiveInt(process.env.CORS_MAX_AGE_SECONDS, 600);
+const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.ALLOWED_ORIGINS ?? '');
 
 const app = express();
-app.use(cors());
+app.use(helmet(buildHelmetOptions()));
+app.use(cors(corsOptionsDelegate));
+app.use('/api', enforceApiOriginAllowlist);
 app.use(express.json({ limit: '1mb' }));
 
 class UpstreamTimeoutError extends Error {}
@@ -97,6 +110,128 @@ function parsePositiveInt(rawValue, fallback) {
     return fallback;
   }
   return parsed;
+}
+
+function normalizeOrigin(originText) {
+  const raw = String(originText ?? '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(raw);
+  } catch {
+    return '';
+  }
+
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    return '';
+  }
+
+  if (parsedUrl.username || parsedUrl.password || parsedUrl.pathname !== '/' || parsedUrl.search || parsedUrl.hash) {
+    return '';
+  }
+
+  return `${parsedUrl.protocol}//${parsedUrl.host}`.toLowerCase();
+}
+
+function parseAllowedOrigins(rawValue) {
+  return new Set(
+    String(rawValue ?? '')
+      .split(',')
+      .map((value) => normalizeOrigin(value))
+      .filter(Boolean)
+  );
+}
+
+function requestOriginFromHost(req) {
+  const host = cleanText(req.headers?.host ?? '');
+  if (!host) {
+    return '';
+  }
+
+  const forwardedProto = cleanText(req.headers?.['x-forwarded-proto'] ?? '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  const protocol = forwardedProto || (req.secure ? 'https' : 'http');
+
+  return normalizeOrigin(`${protocol}://${host}`);
+}
+
+function isOriginAllowedForRequest(req, originText) {
+  const normalizedOrigin = normalizeOrigin(originText);
+  if (!normalizedOrigin) {
+    return false;
+  }
+
+  if (ALLOWED_ORIGINS.has(normalizedOrigin)) {
+    return true;
+  }
+
+  const sameOrigin = requestOriginFromHost(req);
+  return Boolean(sameOrigin) && sameOrigin === normalizedOrigin;
+}
+
+function corsOptionsDelegate(req, callback) {
+  const originText = cleanText(req.headers?.origin ?? '');
+  if (!originText) {
+    callback(null, { origin: false });
+    return;
+  }
+
+  if (!isOriginAllowedForRequest(req, originText)) {
+    callback(null, { origin: false });
+    return;
+  }
+
+  callback(null, {
+    origin: originText,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+    maxAge: CORS_MAX_AGE_SECONDS,
+  });
+}
+
+function enforceApiOriginAllowlist(req, res, next) {
+  const originText = cleanText(req.headers?.origin ?? '');
+  if (!originText || isOriginAllowedForRequest(req, originText)) {
+    return next();
+  }
+
+  return res.status(403).json({
+    error: 'Origin not allowed by CORS policy.',
+  });
+}
+
+function buildHelmetOptions() {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const contentSecurityPolicy = isProduction
+    ? {
+        useDefaults: true,
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+          imgSrc: ["'self'", 'data:', 'https:'],
+          connectSrc: ["'self'"],
+          frameAncestors: ["'none'"],
+          objectSrc: ["'none'"],
+          baseUri: ["'self'"],
+          formAction: ["'self'"],
+        },
+      }
+    : false;
+
+  return {
+    contentSecurityPolicy,
+    frameguard: { action: 'deny' },
+    referrerPolicy: { policy: 'no-referrer' },
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'same-origin' },
+  };
 }
 
 function cleanText(value) {
