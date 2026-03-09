@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GW Course Studio favicon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a9396" />
+      <stop offset="1" stop-color="#005f73" />
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset="1" stop-color="#eaf5f8" />
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)" />
+  <rect x="12" y="14" width="40" height="36" rx="6" fill="url(#paper)" />
+  <rect x="12" y="14" width="40" height="10" rx="6" fill="#d8ecf0" />
+  <rect x="18" y="10" width="4" height="10" rx="2" fill="#ffffff" />
+  <rect x="42" y="10" width="4" height="10" rx="2" fill="#ffffff" />
+  <g fill="#b7d3da">
+    <rect x="16" y="28" width="8" height="3" rx="1.5" />
+    <rect x="28" y="28" width="8" height="3" rx="1.5" />
+    <rect x="40" y="28" width="8" height="3" rx="1.5" />
+    <rect x="16" y="34" width="8" height="3" rx="1.5" />
+    <rect x="28" y="34" width="8" height="3" rx="1.5" />
+    <rect x="40" y="34" width="8" height="3" rx="1.5" />
+  </g>
+  <rect x="14" y="38" width="36" height="14" rx="7" fill="#e8f5f8" opacity="0.98" />
+  <text
+    x="32"
+    y="49"
+    text-anchor="middle"
+    font-family="IBM Plex Sans, Segoe UI, Arial, sans-serif"
+    font-size="20.625"
+    font-weight="700"
+    letter-spacing="0.7"
+    fill="#0b2f3b"
+  >
+    GW
+  </text>
+</svg>
