@@ -7,10 +7,25 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TERM_LABELS = {
+  '202702': 'Summer 2027',
+  '202701': 'Spring 2027',
+  '202603': 'Fall 2026',
+  '202602': 'Summer 2026',
   '202601': 'Spring 2026',
+  '202502': 'Summer 2025',
   '202503': 'Fall 2025',
   '202501': 'Spring 2025',
   '202403': 'Fall 2024',
+};
+
+const CAMPUS_LABELS = {
+  '1': 'Main Campus',
+  '2': 'Virginia Science & Technology Campus',
+  '3': 'Off Campus',
+  '4': 'Mount Vernon Campus',
+  '6': "CCAS Dean's Seminars",
+  '7': 'Online Courses',
+  '8': 'Corcoran School of the Arts and Design',
 };
 
 const EXPLICIT_CROSSLIST_GROUPS = new Map([
@@ -518,6 +533,8 @@ function parseTermLabel(url, fullPageText) {
 function parseRowsFromHtml(html, rawUrl) {
   const parsedUrl = new URL(rawUrl);
   const fallbackSubject = cleanText(parsedUrl.searchParams.get('subjId')).toUpperCase();
+  const campusId = cleanText(parsedUrl.searchParams.get('campId'));
+  const campusLabel = CAMPUS_LABELS[campusId] ?? (campusId ? `Campus ${campusId}` : 'Unknown Campus');
   const $ = cheerio.load(html);
 
   const fullPageText = cleanText($('body').text());
@@ -724,6 +741,8 @@ function parseRowsFromHtml(html, rawUrl) {
     rows,
     termLabel,
     subjectLabel,
+    campusId,
+    campusLabel,
   };
 }
 
@@ -1167,7 +1186,11 @@ function collapseByCrnOverlap(rows) {
 
 function parseAndMerge(html, rawUrl) {
   const parsed = parseRowsFromHtml(html, rawUrl);
-  let rows = parsed.rows.filter((row) => Array.isArray(row.meetings) && row.meetings.length > 0);
+  let rows = parsed.rows.filter((row) => {
+    const hasMeetings = Array.isArray(row.meetings) && row.meetings.length > 0;
+    const isCancelled = String(row.status ?? '').toUpperCase().includes('CANCEL');
+    return hasMeetings || isCancelled;
+  });
   rows = mergeStructuredCrosslisted(rows);
   rows = mergeCrossListed(rows);
   rows = applyExplicitExceptionMerges(rows);
@@ -1191,6 +1214,8 @@ function parseAndMerge(html, rawUrl) {
       sourceUrl: rawUrl,
       termLabel: parsed.termLabel,
       subjectLabel: parsed.subjectLabel,
+      campusId: parsed.campusId,
+      campusLabel: parsed.campusLabel,
       parsedCourseCount: rows.length,
       rawRowCount: parsed.rows.length,
       generatedAt: new Date().toISOString(),
@@ -1198,6 +1223,94 @@ function parseAndMerge(html, rawUrl) {
     courses: rows,
   };
 }
+
+function parseSubjectsFromHtml(html, rawUrl) {
+  const $ = cheerio.load(html);
+  const parsedUrl = new URL(rawUrl);
+  const subjectsById = new Map();
+
+  $('a[href]').each((_, anchor) => {
+    const href = cleanText($(anchor).attr('href'));
+    if (!href) {
+      return;
+    }
+
+    let linkUrl;
+    try {
+      linkUrl = new URL(href, parsedUrl);
+    } catch {
+      return;
+    }
+
+    if (!/\/mod\/pws\/courses\.cfm$/i.test(linkUrl.pathname)) {
+      return;
+    }
+
+    const subjectId = cleanText(linkUrl.searchParams.get('subjId')).toUpperCase();
+    if (!subjectId) {
+      return;
+    }
+
+    const subjectName = cleanText($(anchor).text());
+    subjectsById.set(subjectId, {
+      id: subjectId,
+      name: subjectName || subjectId,
+      label: subjectName ? `${subjectId} - ${subjectName}` : subjectId,
+    });
+  });
+
+  return [...subjectsById.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+app.get('/api/subjects', async (req, res) => {
+  try {
+    const campId = cleanText(req.query?.campId) || '1';
+    const termId = cleanText(req.query?.termId) || '202601';
+
+    if (!/^\d+$/.test(campId) || !/^\d+$/.test(termId)) {
+      return res.status(400).json({ error: 'campId and termId must be numeric.' });
+    }
+
+    const sourceUrl = `https://my.gwu.edu/mod/pws/subjects.cfm?campId=${encodeURIComponent(campId)}&termId=${encodeURIComponent(
+      termId
+    )}`;
+    const response = await fetch(sourceUrl, {
+      headers: {
+        'User-Agent': 'class-schedule-visualizer/1.0',
+      },
+    });
+
+    if (!response.ok) {
+      return res.status(502).json({ error: `GW returned HTTP ${response.status} while loading subjects.` });
+    }
+
+    const html = await response.text();
+    const subjects = parseSubjectsFromHtml(html, sourceUrl);
+
+    if (subjects.length === 0) {
+      const campusLabel = CAMPUS_LABELS[campId] ?? `Campus ${campId}`;
+      const termLabel = TERM_LABELS[termId] ?? `Term ${termId}`;
+      return res.status(422).json({
+        error: `No subjects are currently published for ${termLabel} at ${campusLabel}.`,
+      });
+    }
+
+    return res.json({
+      meta: {
+        sourceUrl,
+        campId,
+        campusLabel: CAMPUS_LABELS[campId] ?? `Campus ${campId}`,
+        termId,
+        termLabel: TERM_LABELS[termId] ?? `Term ${termId}`,
+        subjectCount: subjects.length,
+        generatedAt: new Date().toISOString(),
+      },
+      subjects,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown server error' });
+  }
+});
 
 app.post('/api/parse-url', async (req, res) => {
   try {
@@ -1236,7 +1349,8 @@ app.post('/api/parse-url', async (req, res) => {
 
     if (parsed.courses.length === 0) {
       return res.status(422).json({
-        error: 'No course rows were detected on this page. Verify the URL points to a print/search GW schedule page.',
+        error:
+          'No classes are currently published for this selection. Try a different term, campus, or subject.',
       });
     }
 

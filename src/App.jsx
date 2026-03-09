@@ -1,7 +1,33 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-const EXAMPLE_URL =
-  'https://my.gwu.edu/mod/pws/print.cfm?campId=1&termId=202601&subjId=CSCI';
+// Update these defaults each scheduling cycle.
+const DEFAULT_SELECTION = {
+  campusId: '1',
+  termId: '202602',
+  subjectId: 'CSCI',
+};
+
+const TERM_OPTIONS = [
+  { id: '202602', label: "Summer '26" },
+  { id: '202601', label: "Spring '26" },
+  { id: '202503', label: "Fall '25" },
+  { id: '202502', label: "Summer '25" },
+  { id: '202501', label: "Spring '25" },
+  { id: '202403', label: "Fall '24" },
+  { id: '202603', label: "Fall '26" },
+  { id: '202701', label: "Spring '27" },
+  { id: '202702', label: "Summer '27" },
+];
+
+const CAMPUS_OPTIONS = [
+  { id: '1', label: 'Main Campus' },
+  { id: '4', label: 'Mount Vernon Campus' },
+  { id: '2', label: 'Virginia Science & Technology Campus' },
+  { id: '3', label: 'Off Campus' },
+  { id: '6', label: "CCAS Dean's Seminars" },
+  { id: '7', label: 'Online Courses' },
+  { id: '8', label: 'Corcoran School of the Arts and Design' },
+];
 
 const DAYS = [
   { code: 'M', label: 'Mon' },
@@ -12,6 +38,15 @@ const DAYS = [
   { code: 'S', label: 'Sat' },
   { code: 'U', label: 'Sun' },
 ];
+
+function buildScheduleUrl(campusId, termId, subjectId) {
+  const params = new URLSearchParams({
+    campId: String(campusId ?? '').trim(),
+    termId: String(termId ?? '').trim(),
+    subjId: String(subjectId ?? '').trim().toUpperCase(),
+  });
+  return `https://my.gwu.edu/mod/pws/print.cfm?${params.toString()}`;
+}
 
 function hashString(text) {
   let hash = 0;
@@ -48,6 +83,10 @@ function colorForCourse(course) {
   const status = String(course.status ?? '').toUpperCase();
   const isLab = String(course.title ?? '').toLowerCase().includes('(lab)');
 
+  if (status.includes('CANCEL')) {
+    return 'hsl(12 62% 40%)';
+  }
+
   let saturation = isLab ? 45 : 68;
   let lightness = isLab ? 44 : 38;
 
@@ -60,6 +99,16 @@ function colorForCourse(course) {
   }
 
   return `hsl(${hue} ${saturation}% ${lightness}%)`;
+}
+
+function isCancelledCourse(course) {
+  return String(course?.status ?? '')
+    .toUpperCase()
+    .includes('CANCEL');
+}
+
+function isSchedulableCourse(course) {
+  return !isCancelledCourse(course) && Array.isArray(course?.meetings) && course.meetings.length > 0;
 }
 
 function summarizeMeetings(course) {
@@ -290,17 +339,93 @@ function buildCalendar(courses, activeCourseId) {
 }
 
 function App() {
-  const [url, setUrl] = useState(EXAMPLE_URL);
+  const [campusId, setCampusId] = useState(DEFAULT_SELECTION.campusId);
+  const [termId, setTermId] = useState(DEFAULT_SELECTION.termId);
+  const [subjectId, setSubjectId] = useState(DEFAULT_SELECTION.subjectId);
+  const [subjectOptions, setSubjectOptions] = useState([]);
+  const [subjectOptionsLoading, setSubjectOptionsLoading] = useState(false);
+  const [subjectOptionsError, setSubjectOptionsError] = useState('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [payload, setPayload] = useState(null);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [showOnlySelected, setShowOnlySelected] = useState(false);
+  const [showCancelledCourses, setShowCancelledCourses] = useState(false);
   const [expandedLinkedParentIds, setExpandedLinkedParentIds] = useState(() => new Set());
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [detailPosition, setDetailPosition] = useState(null);
   const [focusedDayCode, setFocusedDayCode] = useState(null);
+  const normalizedSubjectId = useMemo(
+    () => String(subjectId ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8),
+    [subjectId]
+  );
+  const scheduleUrl = useMemo(
+    () => buildScheduleUrl(campusId, termId, normalizedSubjectId),
+    [campusId, normalizedSubjectId, termId]
+  );
+  const selectedCampusLabel = useMemo(
+    () => CAMPUS_OPTIONS.find((campus) => campus.id === campusId)?.label ?? `Campus ${campusId}`,
+    [campusId]
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadSubjects() {
+      setSubjectOptionsLoading(true);
+      setSubjectOptionsError('');
+      try {
+        const response = await fetch(
+          `/api/subjects?campId=${encodeURIComponent(campusId)}&termId=${encodeURIComponent(termId)}`,
+          { signal: controller.signal }
+        );
+        const body = await response.json();
+        if (!response.ok) {
+          if (response.status === 422) {
+            throw new Error(
+              body.error ?? 'No subjects are published yet for this term/campus. Try another term or campus.'
+            );
+          }
+          throw new Error(body.error ?? `Failed to load subjects (${response.status})`);
+        }
+
+        const options = Array.isArray(body.subjects)
+          ? body.subjects
+              .map((subject) => ({
+                id: String(subject.id || '').trim().toUpperCase(),
+                name: String(subject.name || '').trim(),
+                label: String(subject.label || '').trim(),
+              }))
+              .filter((subject) => subject.id)
+          : [];
+
+        setSubjectOptions(options);
+        setSubjectId((current) => {
+          const normalizedCurrent = String(current ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+          if (options.some((subject) => subject.id === normalizedCurrent)) {
+            return normalizedCurrent;
+          }
+          if (options.length > 0) {
+            return options[0].id;
+          }
+          return normalizedCurrent;
+        });
+      } catch (requestError) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setSubjectOptions([]);
+        setSubjectOptionsError(requestError instanceof Error ? requestError.message : 'Failed to load subjects');
+      } finally {
+        if (!controller.signal.aborted) {
+          setSubjectOptionsLoading(false);
+        }
+      }
+    }
+
+    loadSubjects();
+    return () => controller.abort();
+  }, [campusId, termId]);
 
   const courses = payload?.courses ?? [];
 
@@ -358,7 +483,13 @@ function App() {
     return mapping;
   }, [courses]);
 
-  const primaryListCourses = useMemo(() => filteredCourses.filter((course) => course.relationType !== 'linked'), [filteredCourses]);
+  const primaryListCourses = useMemo(
+    () =>
+      filteredCourses.filter(
+        (course) => course.relationType !== 'linked' && (showCancelledCourses || !isCancelledCourse(course))
+      ),
+    [filteredCourses, showCancelledCourses]
+  );
 
   const listRows = useMemo(() => {
     const rows = [];
@@ -368,7 +499,10 @@ function App() {
       const visibleLinkedChildren = showOnlySelected
         ? linkedChildren.filter((linkedCourse) => selectedIds.has(linkedCourse.id))
         : linkedChildren;
-      const showPrimary = !showOnlySelected || selectedIds.has(course.id) || (showLinked && visibleLinkedChildren.length > 0);
+      const showPrimary =
+        !showOnlySelected ||
+        (isSchedulableCourse(course) && selectedIds.has(course.id)) ||
+        (showLinked && visibleLinkedChildren.length > 0);
       if (!showPrimary) {
         continue;
       }
@@ -401,7 +535,7 @@ function App() {
   );
 
   const selectedCourses = useMemo(
-    () => courses.filter((course) => selectedIds.has(course.id)),
+    () => courses.filter((course) => selectedIds.has(course.id) && isSchedulableCourse(course)),
     [courses, selectedIds]
   );
   const visibleDays = useMemo(() => {
@@ -493,16 +627,20 @@ function App() {
     setDetailPosition(calculateDetailPosition(anchorElement?.getBoundingClientRect?.() ?? null));
   }
 
-  async function analyzeUrl(event) {
+  async function analyzeSchedule(event) {
     event.preventDefault();
     setError('');
     setLoading(true);
 
     try {
+      if (!normalizedSubjectId) {
+        throw new Error('Please select a subject.');
+      }
+
       const response = await fetch('/api/parse-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url: buildScheduleUrl(campusId, termId, normalizedSubjectId) }),
       });
       const body = await response.json();
       if (!response.ok) {
@@ -518,13 +656,23 @@ function App() {
       setSelectedIds(new Set());
       setExpandedLinkedParentIds(new Set());
       closeCourseDetails();
-      setError(requestError instanceof Error ? requestError.message : 'Unexpected error');
+      const message = requestError instanceof Error ? requestError.message : 'Unexpected error';
+      if (/No course rows were detected/i.test(message)) {
+        setError('No classes are currently published for this selection. Try a different term, campus, or subject.');
+      } else {
+        setError(message);
+      }
     } finally {
       setLoading(false);
     }
   }
 
   function toggleCourse(id) {
+    const course = courses.find((entry) => entry.id === id);
+    if (!isSchedulableCourse(course)) {
+      return;
+    }
+
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -539,7 +687,9 @@ function App() {
   function selectAllVisible() {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      visibleListCourses.forEach((course) => next.add(course.id));
+      visibleListCourses
+        .filter((course) => isSchedulableCourse(course))
+        .forEach((course) => next.add(course.id));
       return next;
     });
   }
@@ -549,7 +699,9 @@ function App() {
   }
 
   function selectAllCourses() {
-    setSelectedIds(new Set(courses.filter((course) => course.relationType !== 'linked').map((course) => course.id)));
+    setSelectedIds(
+      new Set(courses.filter((course) => course.relationType !== 'linked' && isSchedulableCourse(course)).map((course) => course.id))
+    );
   }
 
   function toggleLinkedForParent(parentId) {
@@ -570,25 +722,74 @@ function App() {
         <div>
           <h1>GW Course Timing Studio</h1>
           <p>
-            Paste a GW PWS URL, parse the classes, and compare selected sections on a weekly calendar.
+            Select term, campus, and subject to load the GW Schedule of Classes and compare selected sections on a
+            weekly calendar.
           </p>
         </div>
-        <form className="url-form" onSubmit={analyzeUrl}>
-          <label htmlFor="url">GW Course List URL</label>
+        <form className="url-form" onSubmit={analyzeSchedule}>
+          <div className="selectors-grid">
+            <label htmlFor="term-id">
+              Term
+              <select id="term-id" value={termId} onChange={(event) => setTermId(event.target.value)} required>
+                {TERM_OPTIONS.map((term) => (
+                  <option key={term.id} value={term.id}>
+                    {term.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label htmlFor="campus-id">
+              Campus
+              <select
+                id="campus-id"
+                value={campusId}
+                onChange={(event) => setCampusId(event.target.value)}
+                required
+              >
+                {CAMPUS_OPTIONS.map((campus) => (
+                  <option key={campus.id} value={campus.id}>
+                    {campus.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label htmlFor="subject-id">
+              Subject {subjectOptionsLoading ? '(loading...)' : ''}
+              <input
+                id="subject-id"
+                type="text"
+                list="subject-options"
+                value={subjectId}
+                onChange={(event) =>
+                  setSubjectId(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))
+                }
+                placeholder="e.g., CSCI"
+                required
+              />
+            </label>
+          </div>
+          <datalist id="subject-options">
+            {subjectOptions.map((subject) => (
+              <option key={subject.id} value={subject.id}>
+                {subject.label || `${subject.id}${subject.name ? ` - ${subject.name}` : ''}`}
+              </option>
+            ))}
+          </datalist>
+
           <div className="url-input-row">
-            <input
-              id="url"
-              type="url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder={EXAMPLE_URL}
-              required
-            />
-            <button type="submit" disabled={loading}>
-              {loading ? 'Analyzing...' : 'Analyze'}
+            <button type="submit" disabled={loading || subjectOptionsLoading || !normalizedSubjectId}>
+              {loading ? 'Loading...' : 'Load Classes'}
             </button>
           </div>
-          <p className="hint">Example: {EXAMPLE_URL}</p>
+          <p className="hint">
+            Generated URL: <code>{scheduleUrl}</code>
+          </p>
+          <p className="hint">
+            Available subjects for this term/campus: {subjectOptionsLoading ? 'Loading...' : subjectOptions.length}
+          </p>
+          {subjectOptionsError ? <p className="hint">{subjectOptionsError}</p> : null}
         </form>
       </header>
 
@@ -599,7 +800,8 @@ function App() {
           <section className="course-panel">
             <div className="panel-header">
               <h2>
-                {payload.meta.subjectLabel} | {payload.meta.termLabel}
+                {payload.meta.subjectLabel} | {payload.meta.termLabel} |{' '}
+                {payload.meta.campusLabel || selectedCampusLabel}
               </h2>
               <p>
                 {payload.meta.parsedCourseCount} merged courses from {payload.meta.rawRowCount} raw rows
@@ -631,17 +833,30 @@ function App() {
                   />
                   Show only selected
                 </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={showCancelledCourses}
+                    onChange={(event) => setShowCancelledCourses(event.target.checked)}
+                  />
+                  Show cancelled
+                </label>
               </div>
             </div>
 
             <div className="course-list">
               {listRows.map((row) => {
                 const course = row.course;
+                const courseCancelled = isCancelledCourse(course);
                 return (
-                <label className={`course-item ${row.isLinked ? 'course-item-linked' : ''}`} key={course.id}>
+                <label
+                  className={`course-item ${row.isLinked ? 'course-item-linked' : ''} ${courseCancelled ? 'course-item-cancelled' : ''}`}
+                  key={course.id}
+                >
                   <input
                     type="checkbox"
-                    checked={selectedIds.has(course.id)}
+                    checked={!courseCancelled && selectedIds.has(course.id)}
+                    disabled={courseCancelled}
                     onChange={() => toggleCourse(course.id)}
                   />
                   <div className="course-content">
@@ -669,6 +884,7 @@ function App() {
                     <p className="course-meta">
                       {course.instructor} | {course.status}
                     </p>
+                    {courseCancelled ? <p className="course-meta course-cancelled-note">Cancelled (not schedulable)</p> : null}
                     {new Set(instructorEntriesForCourse(course).map((entry) => entry.instructor)).size > 1 ? (
                       <p className="course-meta course-instructor-breakdown">
                         {instructorEntriesForCourse(course)
