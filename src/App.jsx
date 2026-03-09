@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 
 // Update these defaults each scheduling cycle.
@@ -39,6 +39,65 @@ const DAYS = [
   { code: 'S', label: 'Sat' },
   { code: 'U', label: 'Sun' },
 ];
+const RECENT_SUBJECTS_STORAGE_KEY = 'gw-course-studio-recent-subjects-v1';
+const MAX_RECENT_SUBJECTS = 12;
+
+function normalizeSubjectIdValue(value) {
+  return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+function termLabelForTermId(termId) {
+  return TERM_OPTIONS.find((term) => term.id === termId)?.label ?? `Term ${termId}`;
+}
+
+function campusLabelForCampusId(campusId) {
+  return CAMPUS_OPTIONS.find((campus) => campus.id === campusId)?.label ?? `Campus ${campusId}`;
+}
+
+function recentSubjectKey(entry) {
+  return `${entry.termId}|${entry.campusId}|${entry.subjectId}`;
+}
+
+function sanitizeRecentSubjects(rawEntries) {
+  if (!Array.isArray(rawEntries)) {
+    return [];
+  }
+
+  const partitioned = rawEntries
+    .map((entry) => {
+      const termId = String(entry?.termId ?? '').trim();
+      const campusId = String(entry?.campusId ?? '').trim();
+      const subjectId = normalizeSubjectIdValue(entry?.subjectId);
+      if (!termId || !campusId || !subjectId) {
+        return null;
+      }
+
+      return {
+        termId,
+        campusId,
+        subjectId,
+        termLabel: String(entry?.termLabel ?? '').trim() || termLabelForTermId(termId),
+        campusLabel: String(entry?.campusLabel ?? '').trim() || campusLabelForCampusId(campusId),
+        subjectLabel: String(entry?.subjectLabel ?? '').trim() || subjectId,
+        pinned: Boolean(entry?.pinned),
+        lastUsedAt: String(entry?.lastUsedAt ?? ''),
+      };
+    })
+    .filter(Boolean)
+    .reduce(
+      (acc, entry) => {
+        if (entry.pinned) {
+          acc.pinned.push(entry);
+        } else {
+          acc.unpinned.push(entry);
+        }
+        return acc;
+      },
+      { pinned: [], unpinned: [] }
+    );
+  const ordered = [...partitioned.pinned, ...partitioned.unpinned];
+  return ordered.slice(0, MAX_RECENT_SUBJECTS);
+}
 
 function buildScheduleUrl(campusId, termId, subjectId) {
   const params = new URLSearchParams({
@@ -346,6 +405,7 @@ function buildCalendar(courses, activeCourseId) {
         section: course.section,
         instructor: course.instructor,
         status: course.status,
+        campusLabel: String(course.frameCampusLabel || '').trim(),
         startMin: meeting.startMin,
         endMin: meeting.endMin,
         startLabel: meeting.startLabel,
@@ -393,22 +453,20 @@ function App() {
   const [showCancelledCourses, setShowCancelledCourses] = useState(false);
   const [expandedLinkedParentIds, setExpandedLinkedParentIds] = useState(() => new Set());
   const [collapsedFrameKeys, setCollapsedFrameKeys] = useState(() => new Set());
+  const [recentSubjects, setRecentSubjects] = useState([]);
+  const [recentSubjectsLoaded, setRecentSubjectsLoaded] = useState(false);
+  const [draggedPinnedKey, setDraggedPinnedKey] = useState(null);
+  const [dragOverPinnedKey, setDragOverPinnedKey] = useState(null);
   const [isSelectedFrameCollapsed, setIsSelectedFrameCollapsed] = useState(false);
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [detailPosition, setDetailPosition] = useState(null);
   const [focusedDayCode, setFocusedDayCode] = useState(null);
-  const normalizedSubjectId = useMemo(
-    () => String(subjectId ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8),
-    [subjectId]
-  );
+  const normalizedSubjectId = useMemo(() => normalizeSubjectIdValue(subjectId), [subjectId]);
   const scheduleUrl = useMemo(
     () => buildScheduleUrl(campusId, termId, normalizedSubjectId),
     [campusId, normalizedSubjectId, termId]
   );
-  const selectedCampusLabel = useMemo(
-    () => CAMPUS_OPTIONS.find((campus) => campus.id === campusId)?.label ?? `Campus ${campusId}`,
-    [campusId]
-  );
+  const selectedCampusLabel = useMemo(() => campusLabelForCampusId(campusId), [campusId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -442,7 +500,7 @@ function App() {
 
         setSubjectOptions(options);
         setSubjectId((current) => {
-          const normalizedCurrent = String(current ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+          const normalizedCurrent = normalizeSubjectIdValue(current);
           if (options.some((subject) => subject.id === normalizedCurrent)) {
             return normalizedCurrent;
           }
@@ -468,9 +526,43 @@ function App() {
     return () => controller.abort();
   }, [campusId, termId]);
 
-  const selectedTermLabel = useMemo(
-    () => TERM_OPTIONS.find((term) => term.id === termId)?.label ?? `Term ${termId}`,
-    [termId]
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(RECENT_SUBJECTS_STORAGE_KEY) || '[]');
+      setRecentSubjects(sanitizeRecentSubjects(parsed));
+    } catch {
+      setRecentSubjects([]);
+    } finally {
+      setRecentSubjectsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !recentSubjectsLoaded) {
+      return;
+    }
+    window.localStorage.setItem(RECENT_SUBJECTS_STORAGE_KEY, JSON.stringify(recentSubjects));
+  }, [recentSubjects, recentSubjectsLoaded]);
+
+  const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
+  const orderedRecentSubjects = useMemo(() => {
+    const pinned = [];
+    const unpinned = [];
+    for (const entry of recentSubjects) {
+      if (entry.pinned) {
+        pinned.push(entry);
+      } else {
+        unpinned.push(entry);
+      }
+    }
+    return [...pinned, ...unpinned];
+  }, [recentSubjects]);
+  const firstUnpinnedRecentIndex = useMemo(
+    () => orderedRecentSubjects.findIndex((entry) => !entry.pinned),
+    [orderedRecentSubjects]
   );
   const courses = useMemo(() => subjectFrames.flatMap((frame) => frame.courses), [subjectFrames]);
 
@@ -695,6 +787,10 @@ function App() {
     [activeCourse, selectedIds]
   );
   const activeCourseDetailUrl = activeCourse ? sanitizeDetailUrl(activeCourse.detailUrl) : '';
+  const activeCourseCampusLabel = activeCourse
+    ? String(activeCourse.frameCampusLabel || '').trim() ||
+      campusLabelForCampusId(String(activeCourse.frameCampusId || '').trim())
+    : '';
 
   const calendar = useMemo(
     () => buildCalendar(selectedCourses, activeCourseId),
@@ -771,77 +867,180 @@ function App() {
     setDetailPosition(calculateDetailPosition(anchorElement?.getBoundingClientRect?.() ?? null));
   }
 
+  function recordRecentSubject(entry) {
+    setRecentSubjects((prev) => {
+      const cleaned = sanitizeRecentSubjects(prev);
+      const key = recentSubjectKey(entry);
+      const pinned = cleaned.filter((item) => item.pinned);
+      const unpinned = cleaned.filter((item) => !item.pinned);
+      const pinnedIndex = pinned.findIndex((item) => recentSubjectKey(item) === key);
+      const unpinnedIndex = unpinned.findIndex((item) => recentSubjectKey(item) === key);
+      const normalizedEntry = { ...entry, lastUsedAt: new Date().toISOString() };
+
+      if (pinnedIndex >= 0) {
+        pinned[pinnedIndex] = { ...pinned[pinnedIndex], ...normalizedEntry, pinned: true };
+      } else {
+        if (unpinnedIndex >= 0) {
+          unpinned.splice(unpinnedIndex, 1);
+        }
+        unpinned.unshift({ ...normalizedEntry, pinned: false });
+      }
+
+      return [...pinned, ...unpinned].slice(0, MAX_RECENT_SUBJECTS);
+    });
+  }
+
+  function removeRecentSubject(entry) {
+    const key = recentSubjectKey(entry);
+    setRecentSubjects((prev) => prev.filter((item) => recentSubjectKey(item) !== key));
+    setDraggedPinnedKey((prev) => (prev === key ? null : prev));
+    setDragOverPinnedKey((prev) => (prev === key ? null : prev));
+  }
+
+  function togglePinRecentSubject(entry) {
+    const key = recentSubjectKey(entry);
+    setRecentSubjects((prev) => {
+      const cleaned = sanitizeRecentSubjects(prev);
+      const pinned = cleaned.filter((item) => item.pinned);
+      const unpinned = cleaned.filter((item) => !item.pinned);
+      const pinnedIndex = pinned.findIndex((item) => recentSubjectKey(item) === key);
+      const unpinnedIndex = unpinned.findIndex((item) => recentSubjectKey(item) === key);
+
+      if (pinnedIndex >= 0) {
+        const [item] = pinned.splice(pinnedIndex, 1);
+        unpinned.unshift({ ...item, pinned: false, lastUsedAt: new Date().toISOString() });
+      } else if (unpinnedIndex >= 0) {
+        const [item] = unpinned.splice(unpinnedIndex, 1);
+        pinned.unshift({ ...item, pinned: true });
+      }
+
+      return [...pinned, ...unpinned].slice(0, MAX_RECENT_SUBJECTS);
+    });
+  }
+
+  function reorderPinnedRecentSubjects(draggedKey, targetKey) {
+    if (!draggedKey || !targetKey || draggedKey === targetKey) {
+      return;
+    }
+
+    setRecentSubjects((prev) => {
+      const cleaned = sanitizeRecentSubjects(prev);
+      const pinned = cleaned.filter((item) => item.pinned);
+      const unpinned = cleaned.filter((item) => !item.pinned);
+      const draggedIndex = pinned.findIndex((item) => recentSubjectKey(item) === draggedKey);
+      const targetIndex = pinned.findIndex((item) => recentSubjectKey(item) === targetKey);
+      if (draggedIndex < 0 || targetIndex < 0) {
+        return cleaned;
+      }
+
+      const [moved] = pinned.splice(draggedIndex, 1);
+      pinned.splice(targetIndex, 0, moved);
+      return [...pinned, ...unpinned].slice(0, MAX_RECENT_SUBJECTS);
+    });
+  }
+
+  function formatLoadError(requestError) {
+    const message = requestError instanceof Error ? requestError.message : 'Unexpected error';
+    if (/No course rows were detected/i.test(message)) {
+      return 'No classes are currently published for this selection. Try a different term, campus, or subject.';
+    }
+    return message;
+  }
+
+  async function loadSubjectFrame(targetCampusId, targetTermId, targetSubjectId) {
+    const normalizedTargetSubjectId = normalizeSubjectIdValue(targetSubjectId);
+    if (!normalizedTargetSubjectId) {
+      throw new Error('Please select a subject.');
+    }
+
+    const hasDifferentTermLoaded = subjectFrames.some((frame) => frame.termId !== targetTermId);
+    if (hasDifferentTermLoaded) {
+      setSubjectFrames([]);
+      setSelectedIds(new Set());
+      setExpandedLinkedParentIds(new Set());
+      setCollapsedFrameKeys(new Set());
+      setIsSelectedFrameCollapsed(false);
+      closeCourseDetails();
+    }
+
+    const response = await fetch('/api/parse-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: buildScheduleUrl(targetCampusId, targetTermId, normalizedTargetSubjectId) }),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error ?? `Request failed (${response.status})`);
+    }
+
+    const frameKey = `${targetTermId}|${targetCampusId}|${normalizedTargetSubjectId}`;
+    const frameMeta = {
+      key: frameKey,
+      subjectId: normalizedTargetSubjectId,
+      subjectLabel: body.meta?.subjectLabel || normalizedTargetSubjectId,
+      termId: targetTermId,
+      termLabel: body.meta?.termLabel || termLabelForTermId(targetTermId),
+      campusId: targetCampusId,
+      campusLabel: body.meta?.campusLabel || campusLabelForCampusId(targetCampusId),
+      parsedCourseCount: Number(body.meta?.parsedCourseCount ?? body.courses?.length ?? 0),
+      rawRowCount: Number(body.meta?.rawRowCount ?? body.courses?.length ?? 0),
+    };
+    const namespacedCourses = namespaceCourses(body.courses ?? [], frameKey, frameMeta);
+
+    setSubjectFrames((prev) => {
+      const next = prev.filter((frame) => frame.key !== frameKey);
+      next.push({
+        ...frameMeta,
+        courses: namespacedCourses,
+      });
+      return next;
+    });
+    setCollapsedFrameKeys((prev) => {
+      const next = new Set(prev);
+      next.add(frameKey);
+      return next;
+    });
+    recordRecentSubject({
+      termId: targetTermId,
+      termLabel: frameMeta.termLabel,
+      campusId: targetCampusId,
+      campusLabel: frameMeta.campusLabel,
+      subjectId: normalizedTargetSubjectId,
+      subjectLabel: frameMeta.subjectLabel,
+    });
+  }
+
   async function analyzeSchedule(event) {
     event.preventDefault();
     setError('');
     setLoading(true);
 
     try {
-      if (!normalizedSubjectId) {
-        throw new Error('Please select a subject.');
-      }
-
-      const hasDifferentTermLoaded = subjectFrames.some((frame) => frame.termId !== termId);
-      if (hasDifferentTermLoaded) {
-        setSubjectFrames([]);
-        setSelectedIds(new Set());
-        setExpandedLinkedParentIds(new Set());
-        setCollapsedFrameKeys(new Set());
-        setIsSelectedFrameCollapsed(false);
-        closeCourseDetails();
-      }
-
-      const hasDifferentCampusLoaded = subjectFrames.some((frame) => frame.campusId !== campusId);
-      if (hasDifferentCampusLoaded) {
-        throw new Error(
-          'Loaded subjects must use the same campus within a session. Remove existing subjects or switch back.'
-        );
-      }
-
-      const response = await fetch('/api/parse-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: buildScheduleUrl(campusId, termId, normalizedSubjectId) }),
-      });
-      const body = await response.json();
-      if (!response.ok) {
-        throw new Error(body.error ?? `Request failed (${response.status})`);
-      }
-
-      const frameKey = `${termId}|${campusId}|${normalizedSubjectId}`;
-      const frameMeta = {
-        key: frameKey,
-        subjectId: normalizedSubjectId,
-        subjectLabel: body.meta?.subjectLabel || normalizedSubjectId,
-        termId,
-        termLabel: body.meta?.termLabel || selectedTermLabel,
-        campusId,
-        campusLabel: body.meta?.campusLabel || selectedCampusLabel,
-        parsedCourseCount: Number(body.meta?.parsedCourseCount ?? body.courses?.length ?? 0),
-        rawRowCount: Number(body.meta?.rawRowCount ?? body.courses?.length ?? 0),
-      };
-      const namespacedCourses = namespaceCourses(body.courses ?? [], frameKey, frameMeta);
-
-      setSubjectFrames((prev) => {
-        const next = prev.filter((frame) => frame.key !== frameKey);
-        next.push({
-          ...frameMeta,
-          courses: namespacedCourses,
-        });
-        return next;
-      });
-      setCollapsedFrameKeys((prev) => {
-        const next = new Set(prev);
-        next.add(frameKey);
-        return next;
-      });
+      await loadSubjectFrame(campusId, termId, normalizedSubjectId);
     } catch (requestError) {
-      const message = requestError instanceof Error ? requestError.message : 'Unexpected error';
-      if (/No course rows were detected/i.test(message)) {
-        setError('No classes are currently published for this selection. Try a different term, campus, or subject.');
-      } else {
-        setError(message);
-      }
+      setError(formatLoadError(requestError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadRecentSubject(entry) {
+    const nextCampusId = String(entry.campusId || '').trim();
+    const nextTermId = String(entry.termId || '').trim();
+    const nextSubjectId = normalizeSubjectIdValue(entry.subjectId);
+    if (!nextCampusId || !nextTermId || !nextSubjectId) {
+      return;
+    }
+
+    setCampusId(nextCampusId);
+    setTermId(nextTermId);
+    setSubjectId(nextSubjectId);
+    setError('');
+    setLoading(true);
+    try {
+      await loadSubjectFrame(nextCampusId, nextTermId, nextSubjectId);
+    } catch (requestError) {
+      setError(formatLoadError(requestError));
     } finally {
       setLoading(false);
     }
@@ -1167,9 +1366,7 @@ function App() {
                 type="text"
                 list="subject-options"
                 value={subjectId}
-                onChange={(event) =>
-                  setSubjectId(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))
-                }
+                onChange={(event) => setSubjectId(normalizeSubjectIdValue(event.target.value))}
                 placeholder="e.g., CSCI"
                 required
               />
@@ -1196,6 +1393,103 @@ function App() {
           </p>
           {subjectOptionsError ? <p className="hint">{subjectOptionsError}</p> : null}
         </form>
+
+        <section className="recent-subjects">
+          <div className="recent-subjects-header">
+            <h3>Recent Subjects</h3>
+          </div>
+          <p className="hint">Pinned subjects stay at the top. Drag pinned cards to reorder.</p>
+          {orderedRecentSubjects.length === 0 ? (
+            <p className="hint">No recent subjects yet.</p>
+          ) : (
+            <ul className="recent-subject-list">
+              {orderedRecentSubjects.map((entry, index) => {
+                const entryKey = recentSubjectKey(entry);
+                const isPinned = Boolean(entry.pinned);
+                const isDropTarget = Boolean(draggedPinnedKey && dragOverPinnedKey === entryKey && draggedPinnedKey !== entryKey);
+                const subjectItem = (
+                <li
+                  key={entryKey}
+                  className={`recent-subject-item ${isPinned ? 'recent-subject-item-pinned' : ''} ${isDropTarget ? 'recent-subject-item-drop-target' : ''}`}
+                  draggable={isPinned}
+                  onDragStart={(event) => {
+                    if (!isPinned) {
+                      return;
+                    }
+                    setDraggedPinnedKey(entryKey);
+                    setDragOverPinnedKey(null);
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', entryKey);
+                  }}
+                  onDragOver={(event) => {
+                    if (!isPinned || !draggedPinnedKey || draggedPinnedKey === entryKey) {
+                      return;
+                    }
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    setDragOverPinnedKey(entryKey);
+                  }}
+                  onDragLeave={() => {
+                    setDragOverPinnedKey((prev) => (prev === entryKey ? null : prev));
+                  }}
+                  onDrop={(event) => {
+                    if (!isPinned || !draggedPinnedKey || draggedPinnedKey === entryKey) {
+                      return;
+                    }
+                    event.preventDefault();
+                    reorderPinnedRecentSubjects(draggedPinnedKey, entryKey);
+                    setDraggedPinnedKey(null);
+                    setDragOverPinnedKey(null);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedPinnedKey(null);
+                    setDragOverPinnedKey(null);
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="recent-subject-button"
+                    onClick={() => loadRecentSubject(entry)}
+                    disabled={loading}
+                  >
+                    {entry.subjectLabel || entry.subjectId} | {entry.termLabel || termLabelForTermId(entry.termId)} |{' '}
+                    {entry.campusLabel || campusLabelForCampusId(entry.campusId)}
+                  </button>
+                  <button
+                    type="button"
+                    className={`recent-subject-pin ${isPinned ? 'recent-subject-pin-active' : ''}`}
+                    onClick={() => togglePinRecentSubject(entry)}
+                    disabled={loading}
+                    title={isPinned ? 'Unpin' : 'Pin'}
+                    aria-label={isPinned ? 'Unpin subject' : 'Pin subject'}
+                  >
+                    📌
+                  </button>
+                  <button
+                    type="button"
+                    className="recent-subject-remove-circle"
+                    onClick={() => removeRecentSubject(entry)}
+                    disabled={loading}
+                    title="Remove"
+                    aria-label={`Remove ${entry.subjectLabel || entry.subjectId} from recent subjects`}
+                  >
+                    X
+                  </button>
+                </li>
+                );
+                if (index === firstUnpinnedRecentIndex && firstUnpinnedRecentIndex > 0) {
+                  return (
+                    <Fragment key={`${entryKey}-group`}>
+                      <li className="recent-subject-line-break">Unpinned</li>
+                      {subjectItem}
+                    </Fragment>
+                  );
+                }
+                return subjectItem;
+              })}
+            </ul>
+          )}
+        </section>
       </header>
 
       {error ? <div className="error-box">{error}</div> : null}
@@ -1426,7 +1720,7 @@ function App() {
                               width: `${event.widthPct}%`,
                               backgroundColor: event.color,
                             }}
-                            title={`${event.courseNumber} | ${event.title} | ${event.startLabel} - ${event.endLabel}`}
+                            title={`${event.courseNumber} | ${event.title} | ${event.startLabel} - ${event.endLabel}${event.campusLabel ? ` | ${event.campusLabel}` : ''}`}
                             role="button"
                             tabIndex={0}
                             onClick={(mouseEvent) => openCourseDetails(event.courseId, mouseEvent.currentTarget)}
@@ -1439,6 +1733,9 @@ function App() {
                           >
                             <p className="event-code">{event.courseNumber}</p>
                             <p className="event-title">{event.title}</p>
+                            {event.campusLabel ? (
+                              <p className="event-campus">{event.campusLabel}</p>
+                            ) : null}
                             <p>{event.startLabel}</p>
                             <p>{event.endLabel}</p>
                           </article>
@@ -1495,6 +1792,9 @@ function App() {
             </p>
             <p className="detail-meta">
               <strong>Instructor:</strong> {activeCourse.instructor || 'TBA'}
+            </p>
+            <p className="detail-meta">
+              <strong>Campus:</strong> {activeCourseCampusLabel || 'N/A'}
             </p>
             {new Set(instructorEntriesForCourse(activeCourse).map((entry) => entry.instructor)).size > 1 ? (
               <div className="detail-notes">
