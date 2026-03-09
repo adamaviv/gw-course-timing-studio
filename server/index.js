@@ -92,10 +92,16 @@ const UPSTREAM_MAX_RESPONSE_BYTES = parsePositiveInt(process.env.UPSTREAM_MAX_RE
 const API_RATE_LIMIT_WINDOW_MS = parsePositiveInt(process.env.API_RATE_LIMIT_WINDOW_MS, 60_000);
 const API_RATE_LIMIT_PARSE_MAX = parsePositiveInt(process.env.API_RATE_LIMIT_PARSE_MAX, 30);
 const API_RATE_LIMIT_SUBJECTS_MAX = parsePositiveInt(process.env.API_RATE_LIMIT_SUBJECTS_MAX, 60);
+const API_RATE_LIMIT_BUCKET_CAP = parsePositiveInt(process.env.API_RATE_LIMIT_BUCKET_CAP, 5_000);
 const CORS_MAX_AGE_SECONDS = parsePositiveInt(process.env.CORS_MAX_AGE_SECONDS, 600);
 const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.ALLOWED_ORIGINS ?? '');
+const TRUST_PROXY = parseTrustProxy(process.env.TRUST_PROXY);
 
 const app = express();
+app.disable('x-powered-by');
+if (TRUST_PROXY !== false) {
+  app.set('trust proxy', TRUST_PROXY);
+}
 app.use(helmet(buildHelmetOptions()));
 app.use(cors(corsOptionsDelegate));
 app.use('/api', enforceApiOriginAllowlist);
@@ -110,6 +116,36 @@ function parsePositiveInt(rawValue, fallback) {
     return fallback;
   }
   return parsed;
+}
+
+function parseTrustProxy(rawValue) {
+  const text = String(rawValue ?? '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const normalized = text.toLowerCase();
+  if (normalized === 'false' || normalized === '0' || normalized === 'off' || normalized === 'no') {
+    return false;
+  }
+  if (normalized === 'true' || normalized === '1' || normalized === 'on' || normalized === 'yes') {
+    return true;
+  }
+
+  if (/^\d+$/.test(text)) {
+    const hops = Number.parseInt(text, 10);
+    return hops > 0 ? hops : false;
+  }
+
+  if (text.includes(',')) {
+    const entries = text
+      .split(',')
+      .map((entry) => cleanText(entry))
+      .filter(Boolean);
+    return entries.length > 0 ? entries : false;
+  }
+
+  return text;
 }
 
 function normalizeOrigin(originText) {
@@ -151,11 +187,7 @@ function requestOriginFromHost(req) {
     return '';
   }
 
-  const forwardedProto = cleanText(req.headers?.['x-forwarded-proto'] ?? '')
-    .split(',')[0]
-    .trim()
-    .toLowerCase();
-  const protocol = forwardedProto || (req.secure ? 'https' : 'http');
+  const protocol = cleanText(req.protocol).toLowerCase() === 'https' ? 'https' : 'http';
 
   return normalizeOrigin(`${protocol}://${host}`);
 }
@@ -242,11 +274,38 @@ function cleanText(value) {
 }
 
 function clientAddressKey(req) {
-  const forwarded = cleanText(req.headers?.['x-forwarded-for'] ?? '');
-  if (forwarded) {
-    return forwarded.split(',')[0].trim();
-  }
   return cleanText(req.ip || req.socket?.remoteAddress || 'unknown');
+}
+
+function enforceRateLimitBucketCap(buckets, now, windowMs, bucketCap) {
+  if (bucketCap <= 0 || buckets.size <= bucketCap) {
+    return;
+  }
+
+  for (const [bucketKey, bucketValue] of buckets.entries()) {
+    if (now - bucketValue.windowStartMs >= windowMs) {
+      buckets.delete(bucketKey);
+    }
+  }
+
+  if (buckets.size <= bucketCap) {
+    return;
+  }
+
+  const overflowCount = buckets.size - bucketCap;
+  const sortedByLastSeen = [...buckets.entries()].sort((left, right) => {
+    const leftSeen = left[1]?.lastSeenMs ?? left[1]?.windowStartMs ?? 0;
+    const rightSeen = right[1]?.lastSeenMs ?? right[1]?.windowStartMs ?? 0;
+    return leftSeen - rightSeen;
+  });
+
+  for (let index = 0; index < overflowCount; index += 1) {
+    const entry = sortedByLastSeen[index];
+    if (!entry) {
+      break;
+    }
+    buckets.delete(entry[0]);
+  }
 }
 
 function createRateLimiter({ routeLabel, maxRequests, windowMs }) {
@@ -262,10 +321,12 @@ function createRateLimiter({ routeLabel, maxRequests, windowMs }) {
     const key = clientAddressKey(req);
     const existing = buckets.get(key);
     const isExpired = !existing || now - existing.windowStartMs >= windowMs;
-    const bucket = isExpired ? { windowStartMs: now, count: 0 } : existing;
+    const bucket = isExpired ? { windowStartMs: now, count: 0, lastSeenMs: now } : existing;
 
     bucket.count += 1;
+    bucket.lastSeenMs = now;
     buckets.set(key, bucket);
+    enforceRateLimitBucketCap(buckets, now, windowMs, API_RATE_LIMIT_BUCKET_CAP);
 
     const resetAtMs = bucket.windowStartMs + windowMs;
     const remaining = Math.max(0, maxRequests - bucket.count);

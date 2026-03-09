@@ -36,23 +36,27 @@ cp .env.example .env
 Supported settings:
 
 - `ALLOWED_ORIGINS`: Comma-separated frontend origin allowlist for API CORS checks
+- `TRUST_PROXY`: Whether to trust `x-forwarded-*` headers (`0`/`false` by default)
 - `CORS_MAX_AGE_SECONDS`: Preflight cache time
 - `UPSTREAM_FETCH_TIMEOUT_MS`: Timeout for upstream GW fetches
 - `UPSTREAM_MAX_RESPONSE_BYTES`: Max upstream response size accepted before parsing
 - `API_RATE_LIMIT_WINDOW_MS`: Rate-limit window size
 - `API_RATE_LIMIT_PARSE_MAX`: Max `/api/parse-url` requests per window per client
 - `API_RATE_LIMIT_SUBJECTS_MAX`: Max `/api/subjects` requests per window per client
+- `API_RATE_LIMIT_BUCKET_CAP`: Max in-memory rate-limit buckets before eviction
 
 Default local values in `.env.example`:
 
 ```dotenv
 ALLOWED_ORIGINS=http://localhost:8787,http://127.0.0.1:8787
+TRUST_PROXY=0
 CORS_MAX_AGE_SECONDS=600
 UPSTREAM_FETCH_TIMEOUT_MS=10000
 UPSTREAM_MAX_RESPONSE_BYTES=2097152
 API_RATE_LIMIT_WINDOW_MS=60000
 API_RATE_LIMIT_PARSE_MAX=30
 API_RATE_LIMIT_SUBJECTS_MAX=60
+API_RATE_LIMIT_BUCKET_CAP=5000
 ```
 
 For local testing, `.env` in this repo is configured with localhost origins and moderate limits.
@@ -86,6 +90,7 @@ npm run test:security-phase1
 npm run test:security-phase2
 npm run test:security-phase3
 npm run test:security-phase4
+npm run test:security-phase5
 ```
 
 Each suite prints test descriptions with explicit `PASS`/`FAIL` status and exits non-zero on failure.
