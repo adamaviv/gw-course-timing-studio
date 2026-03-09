@@ -78,10 +78,26 @@ const PARSE_URL_ALLOWED_PATHS = new Set(['/mod/pws/print.cfm', '/mod/pws/courses
 const PARSE_URL_ALLOWED_QUERY_KEYS = new Set(['campId', 'termId', 'subjId']);
 const PARSE_URL_REDIRECT_LIMIT = 3;
 const REQUEST_USER_AGENT = 'class-schedule-visualizer/1.0';
+const UPSTREAM_FETCH_TIMEOUT_MS = parsePositiveInt(process.env.UPSTREAM_FETCH_TIMEOUT_MS, 10_000);
+const UPSTREAM_MAX_RESPONSE_BYTES = parsePositiveInt(process.env.UPSTREAM_MAX_RESPONSE_BYTES, 2 * 1024 * 1024);
+const API_RATE_LIMIT_WINDOW_MS = parsePositiveInt(process.env.API_RATE_LIMIT_WINDOW_MS, 60_000);
+const API_RATE_LIMIT_PARSE_MAX = parsePositiveInt(process.env.API_RATE_LIMIT_PARSE_MAX, 30);
+const API_RATE_LIMIT_SUBJECTS_MAX = parsePositiveInt(process.env.API_RATE_LIMIT_SUBJECTS_MAX, 60);
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+
+class UpstreamTimeoutError extends Error {}
+class UpstreamResponseTooLargeError extends Error {}
+
+function parsePositiveInt(rawValue, fallback) {
+  const parsed = Number.parseInt(String(rawValue ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
 
 function cleanText(value) {
   return String(value ?? '')
@@ -89,6 +105,140 @@ function cleanText(value) {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+function clientAddressKey(req) {
+  const forwarded = cleanText(req.headers?.['x-forwarded-for'] ?? '');
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+  return cleanText(req.ip || req.socket?.remoteAddress || 'unknown');
+}
+
+function createRateLimiter({ routeLabel, maxRequests, windowMs }) {
+  const buckets = new Map();
+  let requestsSinceCleanup = 0;
+
+  return function rateLimitMiddleware(req, res, next) {
+    if (maxRequests <= 0 || windowMs <= 0) {
+      return next();
+    }
+
+    const now = Date.now();
+    const key = clientAddressKey(req);
+    const existing = buckets.get(key);
+    const isExpired = !existing || now - existing.windowStartMs >= windowMs;
+    const bucket = isExpired ? { windowStartMs: now, count: 0 } : existing;
+
+    bucket.count += 1;
+    buckets.set(key, bucket);
+
+    const resetAtMs = bucket.windowStartMs + windowMs;
+    const remaining = Math.max(0, maxRequests - bucket.count);
+    res.set('X-RateLimit-Limit', String(maxRequests));
+    res.set('X-RateLimit-Remaining', String(remaining));
+    res.set('X-RateLimit-Reset', String(Math.ceil(resetAtMs / 1000)));
+
+    requestsSinceCleanup += 1;
+    if (requestsSinceCleanup >= 200) {
+      requestsSinceCleanup = 0;
+      for (const [bucketKey, bucketValue] of buckets.entries()) {
+        if (now - bucketValue.windowStartMs >= windowMs) {
+          buckets.delete(bucketKey);
+        }
+      }
+    }
+
+    if (bucket.count > maxRequests) {
+      const retryAfterSec = Math.max(1, Math.ceil((resetAtMs - now) / 1000));
+      res.set('Retry-After', String(retryAfterSec));
+      return res.status(429).json({
+        error: `Rate limit exceeded for ${routeLabel}. Max ${maxRequests} requests per ${Math.ceil(windowMs / 1000)} seconds.`,
+      });
+    }
+
+    return next();
+  };
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = UPSTREAM_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
+  let cleanupExternalAbortListener = null;
+
+  if (options.signal) {
+    const onAbort = () => controller.abort(options.signal.reason);
+    if (options.signal.aborted) {
+      onAbort();
+    } else {
+      options.signal.addEventListener('abort', onAbort, { once: true });
+      cleanupExternalAbortListener = () => options.signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new UpstreamTimeoutError(`Upstream request timed out after ${timeoutMs}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+    cleanupExternalAbortListener?.();
+  }
+}
+
+async function readResponseTextWithLimit(response, maxBytes = UPSTREAM_MAX_RESPONSE_BYTES) {
+  if (maxBytes <= 0) {
+    return response.text();
+  }
+
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+      throw new UpstreamResponseTooLargeError(`Upstream response exceeded ${maxBytes} bytes.`);
+    }
+    return text;
+  }
+
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    const chunk = value ?? new Uint8Array();
+    totalBytes += chunk.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel();
+      throw new UpstreamResponseTooLargeError(`Upstream response exceeded ${maxBytes} bytes.`);
+    }
+    text += decoder.decode(chunk, { stream: true });
+  }
+
+  text += decoder.decode();
+  return text;
+}
+
+const parseUrlRateLimiter = createRateLimiter({
+  routeLabel: '/api/parse-url',
+  maxRequests: API_RATE_LIMIT_PARSE_MAX,
+  windowMs: API_RATE_LIMIT_WINDOW_MS,
+});
+
+const subjectsRateLimiter = createRateLimiter({
+  routeLabel: '/api/subjects',
+  maxRequests: API_RATE_LIMIT_SUBJECTS_MAX,
+  windowMs: API_RATE_LIMIT_WINDOW_MS,
+});
 
 function extractCellText($, td) {
   const pieces = [];
@@ -607,12 +757,16 @@ async function fetchScheduleWithValidatedRedirects(startUrl) {
   let currentUrl = startUrl;
 
   for (let redirectCount = 0; redirectCount <= PARSE_URL_REDIRECT_LIMIT; redirectCount += 1) {
-    const response = await fetch(currentUrl, {
-      redirect: 'manual',
-      headers: {
-        'User-Agent': REQUEST_USER_AGENT,
+    const response = await fetchWithTimeout(
+      currentUrl,
+      {
+        redirect: 'manual',
+        headers: {
+          'User-Agent': REQUEST_USER_AGENT,
+        },
       },
-    });
+      UPSTREAM_FETCH_TIMEOUT_MS
+    );
 
     if (response.status >= 300 && response.status < 400) {
       const locationHeader = cleanText(response.headers.get('location'));
@@ -1374,7 +1528,7 @@ function parseSubjectsFromHtml(html, rawUrl) {
   return [...subjectsById.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
-app.get('/api/subjects', async (req, res) => {
+app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
   try {
     const campId = cleanText(req.query?.campId) || '1';
     const termId = cleanText(req.query?.termId) || '202601';
@@ -1386,17 +1540,21 @@ app.get('/api/subjects', async (req, res) => {
     const sourceUrl = `https://my.gwu.edu/mod/pws/subjects.cfm?campId=${encodeURIComponent(campId)}&termId=${encodeURIComponent(
       termId
     )}`;
-    const response = await fetch(sourceUrl, {
-      headers: {
-        'User-Agent': 'class-schedule-visualizer/1.0',
+    const response = await fetchWithTimeout(
+      sourceUrl,
+      {
+        headers: {
+          'User-Agent': REQUEST_USER_AGENT,
+        },
       },
-    });
+      UPSTREAM_FETCH_TIMEOUT_MS
+    );
 
     if (!response.ok) {
       return res.status(502).json({ error: `GW returned HTTP ${response.status} while loading subjects.` });
     }
 
-    const html = await response.text();
+    const html = await readResponseTextWithLimit(response, UPSTREAM_MAX_RESPONSE_BYTES);
     const subjects = parseSubjectsFromHtml(html, sourceUrl);
 
     if (subjects.length === 0) {
@@ -1420,11 +1578,17 @@ app.get('/api/subjects', async (req, res) => {
       subjects,
     });
   } catch (error) {
+    if (error instanceof UpstreamTimeoutError) {
+      return res.status(504).json({ error: error.message });
+    }
+    if (error instanceof UpstreamResponseTooLargeError) {
+      return res.status(502).json({ error: error.message });
+    }
     return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown server error' });
   }
 });
 
-app.post('/api/parse-url', async (req, res) => {
+app.post('/api/parse-url', parseUrlRateLimiter, async (req, res) => {
   try {
     const rawUrl = cleanText(req.body?.url);
     if (!rawUrl) {
@@ -1446,7 +1610,7 @@ app.post('/api/parse-url', async (req, res) => {
       return res.status(502).json({ error: `GW returned HTTP ${response.status}.` });
     }
 
-    const html = await response.text();
+    const html = await readResponseTextWithLimit(response, UPSTREAM_MAX_RESPONSE_BYTES);
     const parsed = parseAndMerge(html, finalUrl);
 
     if (parsed.courses.length === 0) {
@@ -1458,6 +1622,12 @@ app.post('/api/parse-url', async (req, res) => {
 
     return res.json(parsed);
   } catch (error) {
+    if (error instanceof UpstreamTimeoutError) {
+      return res.status(504).json({ error: error.message });
+    }
+    if (error instanceof UpstreamResponseTooLargeError) {
+      return res.status(502).json({ error: error.message });
+    }
     return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown server error' });
   }
 });
