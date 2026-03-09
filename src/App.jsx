@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 // Update these defaults each scheduling cycle.
 const DEFAULT_SELECTION = {
   campusId: '1',
-  termId: '202602',
+  termId: '202601',
   subjectId: 'CSCI',
 };
 
@@ -46,6 +46,20 @@ function buildScheduleUrl(campusId, termId, subjectId) {
     subjId: String(subjectId ?? '').trim().toUpperCase(),
   });
   return `https://my.gwu.edu/mod/pws/print.cfm?${params.toString()}`;
+}
+
+function namespaceCourses(courses, frameKey, frameMeta) {
+  return (courses ?? []).map((course) => ({
+    ...course,
+    id: `${frameKey}:${course.id}`,
+    frameKey,
+    frameSubjectId: frameMeta.subjectId,
+    frameSubjectLabel: frameMeta.subjectLabel,
+    frameTermId: frameMeta.termId,
+    frameTermLabel: frameMeta.termLabel,
+    frameCampusId: frameMeta.campusId,
+    frameCampusLabel: frameMeta.campusLabel,
+  }));
 }
 
 function hashString(text) {
@@ -348,11 +362,13 @@ function App() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [payload, setPayload] = useState(null);
+  const [subjectFrames, setSubjectFrames] = useState([]);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [showOnlySelected, setShowOnlySelected] = useState(false);
   const [showCancelledCourses, setShowCancelledCourses] = useState(false);
   const [expandedLinkedParentIds, setExpandedLinkedParentIds] = useState(() => new Set());
+  const [collapsedFrameKeys, setCollapsedFrameKeys] = useState(() => new Set());
+  const [isSelectedFrameCollapsed, setIsSelectedFrameCollapsed] = useState(false);
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [detailPosition, setDetailPosition] = useState(null);
   const [focusedDayCode, setFocusedDayCode] = useState(null);
@@ -427,7 +443,52 @@ function App() {
     return () => controller.abort();
   }, [campusId, termId]);
 
-  const courses = payload?.courses ?? [];
+  const selectedTermLabel = useMemo(
+    () => TERM_OPTIONS.find((term) => term.id === termId)?.label ?? `Term ${termId}`,
+    [termId]
+  );
+  const courses = useMemo(() => subjectFrames.flatMap((frame) => frame.courses), [subjectFrames]);
+
+  useEffect(() => {
+    const validIds = new Set(courses.map((course) => course.id));
+    setSelectedIds((prev) => {
+      const next = new Set();
+      for (const id of prev) {
+        if (validIds.has(id)) {
+          next.add(id);
+        }
+      }
+      return next;
+    });
+    setExpandedLinkedParentIds((prev) => {
+      const next = new Set();
+      for (const id of prev) {
+        if (validIds.has(id)) {
+          next.add(id);
+        }
+      }
+      return next;
+    });
+    setActiveCourseId((prev) => (prev && validIds.has(prev) ? prev : null));
+  }, [courses]);
+
+  useEffect(() => {
+    if (subjectFrames.length === 0) {
+      return;
+    }
+    const hasDifferentTermLoaded = subjectFrames.some((frame) => frame.termId !== termId);
+    if (!hasDifferentTermLoaded) {
+      return;
+    }
+
+    setSubjectFrames([]);
+    setSelectedIds(new Set());
+    setExpandedLinkedParentIds(new Set());
+    setCollapsedFrameKeys(new Set());
+    setIsSelectedFrameCollapsed(false);
+    closeCourseDetails();
+    setError('');
+  }, [subjectFrames, termId]);
 
   const filteredCourses = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -449,19 +510,22 @@ function App() {
       return haystack.includes(term);
     });
   }, [courses, search]);
+  const isSearchActive = search.trim().length > 0;
 
   const linkedChildrenByParentId = useMemo(() => {
     const mapping = new Map();
     const nonLinkedCourses = courses.filter((course) => course.relationType !== 'linked');
     const parentCrnIndex = new Map();
     for (const parentCourse of nonLinkedCourses) {
+      const frameKey = String(parentCourse.frameKey || '');
       const crns = registrationDetailsForCourse(parentCourse)
         .flatMap((detail) => detail.crns ?? [])
         .map((value) => String(value).trim())
         .filter(Boolean);
       for (const crn of crns) {
-        if (!parentCrnIndex.has(crn)) {
-          parentCrnIndex.set(crn, parentCourse.id);
+        const scopedCrnKey = `${frameKey}|${crn}`;
+        if (!parentCrnIndex.has(scopedCrnKey)) {
+          parentCrnIndex.set(scopedCrnKey, parentCourse.id);
         }
       }
     }
@@ -470,8 +534,9 @@ function App() {
       if (course.relationType !== 'linked') {
         continue;
       }
+      const frameKey = String(course.frameKey || '');
       const parentCrn = String(course.linkedParentCrn || '').trim();
-      const parentId = parentCrnIndex.get(parentCrn);
+      const parentId = parentCrnIndex.get(`${frameKey}|${parentCrn}`);
       if (!parentId) {
         continue;
       }
@@ -529,6 +594,27 @@ function App() {
     return rows;
   }, [primaryListCourses, linkedChildrenByParentId, expandedLinkedParentIds, showOnlySelected, selectedIds]);
 
+  const listRowsByFrame = useMemo(() => {
+    const grouped = new Map();
+    for (const row of listRows) {
+      const frameKey = String(row.course.frameKey || '');
+      const existing = grouped.get(frameKey) ?? [];
+      existing.push(row);
+      grouped.set(frameKey, existing);
+    }
+    return grouped;
+  }, [listRows]);
+
+  const navigationFrames = useMemo(
+    () =>
+      subjectFrames.map((frame) => ({
+        ...frame,
+        rows: listRowsByFrame.get(frame.key) ?? [],
+        collapsed: isSearchActive ? false : collapsedFrameKeys.has(frame.key),
+      })),
+    [subjectFrames, listRowsByFrame, collapsedFrameKeys, isSearchActive]
+  );
+
   const visibleListCourses = useMemo(
     () => [...new Map(listRows.map((row) => [row.course.id, row.course])).values()],
     [listRows]
@@ -538,6 +624,22 @@ function App() {
     () => courses.filter((course) => selectedIds.has(course.id) && isSchedulableCourse(course)),
     [courses, selectedIds]
   );
+  const selectedFrameRows = useMemo(() => {
+    const rows = selectedCourses.map((course) => ({
+      course,
+      isLinked: course.relationType === 'linked',
+      linkedCount: 0,
+      linkedExpanded: false,
+    }));
+    rows.sort(
+      (a, b) =>
+        String(a.course.frameSubjectLabel || '').localeCompare(String(b.course.frameSubjectLabel || '')) ||
+        String(a.course.courseNumber || '').localeCompare(String(b.course.courseNumber || '')) ||
+        String(a.course.section || '').localeCompare(String(b.course.section || ''))
+    );
+    return rows;
+  }, [selectedCourses]);
+
   const visibleDays = useMemo(() => {
     const hasSaturday = selectedCourses.some((course) => (course.meetings ?? []).some((meeting) => meeting.day === 'S'));
     const hasSunday = selectedCourses.some((course) => (course.meetings ?? []).some((meeting) => meeting.day === 'U'));
@@ -637,6 +739,23 @@ function App() {
         throw new Error('Please select a subject.');
       }
 
+      const hasDifferentTermLoaded = subjectFrames.some((frame) => frame.termId !== termId);
+      if (hasDifferentTermLoaded) {
+        setSubjectFrames([]);
+        setSelectedIds(new Set());
+        setExpandedLinkedParentIds(new Set());
+        setCollapsedFrameKeys(new Set());
+        setIsSelectedFrameCollapsed(false);
+        closeCourseDetails();
+      }
+
+      const hasDifferentCampusLoaded = subjectFrames.some((frame) => frame.campusId !== campusId);
+      if (hasDifferentCampusLoaded) {
+        throw new Error(
+          'Loaded subjects must use the same campus within a session. Remove existing subjects or switch back.'
+        );
+      }
+
       const response = await fetch('/api/parse-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -647,15 +766,34 @@ function App() {
         throw new Error(body.error ?? `Request failed (${response.status})`);
       }
 
-      setPayload(body);
-      setSelectedIds(new Set());
-      setExpandedLinkedParentIds(new Set());
-      closeCourseDetails();
+      const frameKey = `${termId}|${campusId}|${normalizedSubjectId}`;
+      const frameMeta = {
+        key: frameKey,
+        subjectId: normalizedSubjectId,
+        subjectLabel: body.meta?.subjectLabel || normalizedSubjectId,
+        termId,
+        termLabel: body.meta?.termLabel || selectedTermLabel,
+        campusId,
+        campusLabel: body.meta?.campusLabel || selectedCampusLabel,
+        parsedCourseCount: Number(body.meta?.parsedCourseCount ?? body.courses?.length ?? 0),
+        rawRowCount: Number(body.meta?.rawRowCount ?? body.courses?.length ?? 0),
+      };
+      const namespacedCourses = namespaceCourses(body.courses ?? [], frameKey, frameMeta);
+
+      setSubjectFrames((prev) => {
+        const next = prev.filter((frame) => frame.key !== frameKey);
+        next.push({
+          ...frameMeta,
+          courses: namespacedCourses,
+        });
+        return next;
+      });
+      setCollapsedFrameKeys((prev) => {
+        const next = new Set(prev);
+        next.add(frameKey);
+        return next;
+      });
     } catch (requestError) {
-      setPayload(null);
-      setSelectedIds(new Set());
-      setExpandedLinkedParentIds(new Set());
-      closeCourseDetails();
       const message = requestError instanceof Error ? requestError.message : 'Unexpected error';
       if (/No course rows were detected/i.test(message)) {
         setError('No classes are currently published for this selection. Try a different term, campus, or subject.');
@@ -714,6 +852,179 @@ function App() {
       }
       return next;
     });
+  }
+
+  function selectAllInFrame(frameKey) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      courses
+        .filter((course) => course.frameKey === frameKey && isSchedulableCourse(course))
+        .forEach((course) => next.add(course.id));
+      return next;
+    });
+  }
+
+  function clearFrameSelection(frameKey) {
+    const framePrefix = `${frameKey}:`;
+    setSelectedIds((prev) => {
+      const next = new Set();
+      for (const id of prev) {
+        if (!String(id).startsWith(framePrefix)) {
+          next.add(id);
+        }
+      }
+      return next;
+    });
+  }
+
+  function toggleSelectAllInFrame(frame) {
+    const schedulableCount = frame.courses.filter((course) => isSchedulableCourse(course)).length;
+    if (schedulableCount === 0) {
+      return;
+    }
+    const selectedCount = frame.courses.filter(
+      (course) => isSchedulableCourse(course) && selectedIds.has(course.id)
+    ).length;
+    if (selectedCount === schedulableCount) {
+      clearFrameSelection(frame.key);
+    } else {
+      selectAllInFrame(frame.key);
+    }
+  }
+
+  function toggleFrameCollapsed(frameKey) {
+    setCollapsedFrameKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(frameKey)) {
+        next.delete(frameKey);
+      } else {
+        next.add(frameKey);
+      }
+      return next;
+    });
+  }
+
+  function handleFrameDoubleClick(event, frameKey) {
+    if (isSearchActive) {
+      return;
+    }
+
+    if (event.target?.closest?.('button,input,select,textarea,a,label')) {
+      return;
+    }
+
+    toggleFrameCollapsed(frameKey);
+  }
+
+  function handleSelectedFrameDoubleClick(event) {
+    if (event.target?.closest?.('button,input,select,textarea,a,label')) {
+      return;
+    }
+    setIsSelectedFrameCollapsed((prev) => !prev);
+  }
+
+  function removeSubjectFrame(frameKey) {
+    const framePrefix = `${frameKey}:`;
+    setSubjectFrames((prev) => prev.filter((frame) => frame.key !== frameKey));
+    setCollapsedFrameKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(frameKey);
+      return next;
+    });
+    setSelectedIds((prev) => {
+      const next = new Set();
+      for (const id of prev) {
+        if (!String(id).startsWith(framePrefix)) {
+          next.add(id);
+        }
+      }
+      return next;
+    });
+    setExpandedLinkedParentIds((prev) => {
+      const next = new Set();
+      for (const id of prev) {
+        if (!String(id).startsWith(framePrefix)) {
+          next.add(id);
+        }
+      }
+      return next;
+    });
+    setActiveCourseId((prev) => (prev && String(prev).startsWith(framePrefix) ? null : prev));
+    setDetailPosition(null);
+  }
+
+  function renderCourseRow(row, options = {}) {
+    const { showLinkedToggle = true } = options;
+    const course = row.course;
+    const courseCancelled = isCancelledCourse(course);
+
+    return (
+      <label
+        className={`course-item ${row.isLinked ? 'course-item-linked' : ''} ${courseCancelled ? 'course-item-cancelled' : ''}`}
+        key={course.id}
+      >
+        <input
+          type="checkbox"
+          checked={!courseCancelled && selectedIds.has(course.id)}
+          disabled={courseCancelled}
+          onChange={() => toggleCourse(course.id)}
+        />
+        <div className="course-content">
+          <button
+            type="button"
+            className="course-info-link course-info-link-top"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openCourseDetails(course.id, event.currentTarget);
+            }}
+          >
+            Details
+          </button>
+          <div className="course-title-row">
+            <span
+              className="course-swatch"
+              style={{ backgroundColor: colorForCourse(course) }}
+              aria-hidden="true"
+            />
+            <span className="course-code">{course.courseNumber}</span>
+            {course.section ? <span className="course-section">Sec {course.section}</span> : null}
+          </div>
+          <p className="course-name">{course.title}</p>
+          <p className="course-meta">
+            {course.instructor} | {course.status}
+          </p>
+          {courseCancelled ? <p className="course-meta course-cancelled-note">Cancelled (not schedulable)</p> : null}
+          {new Set(instructorEntriesForCourse(course).map((entry) => entry.instructor)).size > 1 ? (
+            <p className="course-meta course-instructor-breakdown">
+              {instructorEntriesForCourse(course)
+                .map((entry) => `${entry.courseNumber}: ${entry.instructor}`)
+                .join(' | ')}
+            </p>
+          ) : null}
+          <p className="course-meta">{crnSummary(course)}</p>
+          {registrationDetailsForCourse(course).length > 1 ? (
+            <p className="course-meta course-registration-breakdown">{listingSummary(course)}</p>
+          ) : null}
+          <p className="course-meeting">{summarizeMeetings(course)}</p>
+          <div className="course-actions-row">
+            {showLinkedToggle && !row.isLinked && row.linkedCount > 0 ? (
+              <button
+                type="button"
+                className="course-info-link"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  toggleLinkedForParent(course.id);
+                }}
+              >
+                {row.linkedExpanded ? 'Hide Linked' : 'Show Linked'}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </label>
+    );
   }
 
   return (
@@ -780,7 +1091,7 @@ function App() {
 
           <div className="url-input-row">
             <button type="submit" disabled={loading || subjectOptionsLoading || !normalizedSubjectId}>
-              {loading ? 'Loading...' : 'Load Classes'}
+              {loading ? 'Loading...' : subjectFrames.length > 0 ? 'Add Subject' : 'Load Classes'}
             </button>
           </div>
           <p className="hint">
@@ -795,16 +1106,15 @@ function App() {
 
       {error ? <div className="error-box">{error}</div> : null}
 
-      {payload ? (
+      {subjectFrames.length > 0 ? (
         <main className="workspace">
           <section className="course-panel">
             <div className="panel-header">
               <h2>
-                {payload.meta.subjectLabel} | {payload.meta.termLabel} |{' '}
-                {payload.meta.campusLabel || selectedCampusLabel}
+                {selectedTermLabel} | {selectedCampusLabel}
               </h2>
               <p>
-                {payload.meta.parsedCourseCount} merged courses from {payload.meta.rawRowCount} raw rows
+                {subjectFrames.length} loaded subjects | {courses.length} merged courses
               </p>
             </div>
 
@@ -844,77 +1154,109 @@ function App() {
               </div>
             </div>
 
-            <div className="course-list">
-              {listRows.map((row) => {
-                const course = row.course;
-                const courseCancelled = isCancelledCourse(course);
-                return (
-                <label
-                  className={`course-item ${row.isLinked ? 'course-item-linked' : ''} ${courseCancelled ? 'course-item-cancelled' : ''}`}
-                  key={course.id}
-                >
-                  <input
-                    type="checkbox"
-                    checked={!courseCancelled && selectedIds.has(course.id)}
-                    disabled={courseCancelled}
-                    onChange={() => toggleCourse(course.id)}
-                  />
-                  <div className="course-content">
+            <p className="hint">Double-Click to expand and collapse subjects</p>
+
+            <div className="subject-frames">
+              <section
+                className={`subject-frame selected-frame ${isSelectedFrameCollapsed ? 'subject-frame-collapsed' : ''}`}
+                onDoubleClick={handleSelectedFrameDoubleClick}
+              >
+                <div className="subject-frame-header">
+                  <h3>Selected</h3>
+                  <div className="subject-frame-actions">
+                    <span className="subject-frame-count">{selectedFrameRows.length} selected</span>
                     <button
                       type="button"
-                      className="course-info-link course-info-link-top"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        openCourseDetails(course.id, event.currentTarget);
-                      }}
+                      className="course-info-link"
+                      onClick={clearSelection}
+                      disabled={selectedFrameRows.length === 0}
                     >
-                      Details
+                      Unselect All
                     </button>
-                    <div className="course-title-row">
-                      <span
-                        className="course-swatch"
-                        style={{ backgroundColor: colorForCourse(course) }}
-                        aria-hidden="true"
-                      />
-                      <span className="course-code">{course.courseNumber}</span>
-                      {course.section ? <span className="course-section">Sec {course.section}</span> : null}
-                    </div>
-                    <p className="course-name">{course.title}</p>
-                    <p className="course-meta">
-                      {course.instructor} | {course.status}
-                    </p>
-                    {courseCancelled ? <p className="course-meta course-cancelled-note">Cancelled (not schedulable)</p> : null}
-                    {new Set(instructorEntriesForCourse(course).map((entry) => entry.instructor)).size > 1 ? (
-                      <p className="course-meta course-instructor-breakdown">
-                        {instructorEntriesForCourse(course)
-                          .map((entry) => `${entry.courseNumber}: ${entry.instructor}`)
-                          .join(' | ')}
-                      </p>
-                    ) : null}
-                    <p className="course-meta">{crnSummary(course)}</p>
-                    {registrationDetailsForCourse(course).length > 1 ? (
-                      <p className="course-meta course-registration-breakdown">{listingSummary(course)}</p>
-                    ) : null}
-                    <p className="course-meeting">{summarizeMeetings(course)}</p>
-                    <div className="course-actions-row">
-                      {!row.isLinked && row.linkedCount > 0 ? (
-                        <button
-                          type="button"
-                          className="course-info-link"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            toggleLinkedForParent(course.id);
-                          }}
-                        >
-                          {row.linkedExpanded ? 'Hide Linked' : 'Show Linked'}
-                        </button>
-                      ) : null}
+                  </div>
+                </div>
+                <p className="subject-frame-meta">
+                  Selected classes from all loaded subjects. This frame always stays visible and is not filtered by
+                  search.
+                </p>
+                {!isSelectedFrameCollapsed ? (
+                  <div className="course-list">
+                    {selectedFrameRows.length === 0 ? (
+                      <p className="hint">No classes selected yet.</p>
+                    ) : (
+                      selectedFrameRows.map((row) => renderCourseRow(row, { showLinkedToggle: false }))
+                    )}
+                  </div>
+                ) : null}
+              </section>
+
+              {navigationFrames.map((frame) => {
+                const frameSchedulableCount = frame.courses.filter((course) => isSchedulableCourse(course)).length;
+                const frameSelectedCount = frame.courses.filter(
+                  (course) => isSchedulableCourse(course) && selectedIds.has(course.id)
+                ).length;
+                const frameAllSelected = frameSchedulableCount > 0 && frameSelectedCount === frameSchedulableCount;
+
+                return (
+                <section
+                  className={`subject-frame ${frame.collapsed ? 'subject-frame-collapsed' : ''}`}
+                  key={frame.key}
+                  onDoubleClick={(event) => handleFrameDoubleClick(event, frame.key)}
+                >
+                  <div className="subject-frame-header">
+                    <h3>{frame.subjectLabel}</h3>
+                    <div className="subject-frame-actions">
+                      <button
+                        type="button"
+                        className="course-info-link"
+                        onClick={() => toggleSelectAllInFrame(frame)}
+                        disabled={frameSchedulableCount === 0}
+                      >
+                        {frameAllSelected ? 'Unselect All' : 'Select All'}
+                      </button>
+                      <button
+                        type="button"
+                        className="course-info-link"
+                        onClick={() => clearFrameSelection(frame.key)}
+                        disabled={frameSelectedCount === 0}
+                      >
+                        Clear Selections
+                      </button>
+                      <button
+                        type="button"
+                        className="course-info-link"
+                        onClick={() => removeSubjectFrame(frame.key)}
+                      >
+                        Remove Subject
+                      </button>
                     </div>
                   </div>
-                </label>
-              )})}
+                  <p className="subject-frame-meta">
+                    {frame.subjectLabel} | {frame.termLabel} | {frame.campusLabel}
+                  </p>
+                  {!frame.collapsed ? (
+                    <>
+                      <p className="subject-frame-meta">
+                        {frame.parsedCourseCount} merged courses from {frame.rawRowCount} raw rows
+                      </p>
+                      <div className="subject-frame-controls">
+                        <span className="subject-frame-count">
+                          {frameSelectedCount} selected
+                        </span>
+                      </div>
+
+                      <div className="course-list">
+                        {frame.rows.length === 0 ? (
+                          <p className="hint">No courses match the current filters.</p>
+                        ) : (
+                          frame.rows.map((row) => renderCourseRow(row))
+                        )}
+                      </div>
+                    </>
+                  ) : null}
+                </section>
+                );
+              })}
             </div>
           </section>
 
@@ -933,11 +1275,6 @@ function App() {
                 ) : null}
               </div>
               <p>Events outlined in red overlap with at least one selected class. Click an event for details.</p>
-            </div>
-
-            <div className="course-detail-hint">
-              Click a calendar block to view full course details and notes. Click outside the detail box or use X to
-              close it.
             </div>
 
             <div className="calendar-shell">

@@ -207,6 +207,74 @@ button:disabled {
   padding-right: 0.2rem;
 }
 
+.subject-frames {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.65rem;
+  max-height: 67vh;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.subject-frame {
+  border: 1px solid #c9dad6;
+  border-radius: 12px;
+  background: #f7fcfb;
+  padding: 0.6rem;
+}
+
+.selected-frame {
+  border-color: #8fb8c2;
+  background: #eef8fb;
+}
+
+.subject-frame-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.subject-frame-actions {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.subject-frame-header h3 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.subject-frame-collapsed {
+  padding-bottom: 0.5rem;
+}
+
+.subject-frame-meta {
+  margin: 0.24rem 0 0;
+  color: #4d5f68;
+  font-size: 0.81rem;
+}
+
+.subject-frame-controls {
+  margin-top: 0.45rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.subject-frame-count {
+  font-size: 0.8rem;
+  color: #2f4a54;
+}
+
+.subject-frame .course-list {
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+
 .course-item {
   border: 1px solid #d9e3df;
   border-radius: 12px;
