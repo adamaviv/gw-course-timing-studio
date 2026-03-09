@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 
 const TERM_LABELS = {
   '202702': 'Summer 2027',
@@ -71,6 +72,12 @@ const DAY_NAMES = {
   S: 'Saturday',
   U: 'Sunday',
 };
+
+const PARSE_URL_ALLOWED_HOST = 'my.gwu.edu';
+const PARSE_URL_ALLOWED_PATHS = new Set(['/mod/pws/print.cfm', '/mod/pws/courses.cfm']);
+const PARSE_URL_ALLOWED_QUERY_KEYS = new Set(['campId', 'termId', 'subjId']);
+const PARSE_URL_REDIRECT_LIMIT = 3;
+const REQUEST_USER_AGENT = 'class-schedule-visualizer/1.0';
 
 const app = express();
 app.use(cors());
@@ -530,6 +537,111 @@ function parseTermLabel(url, fullPageText) {
   return termId ? `Term ${termId}` : 'Unknown Term';
 }
 
+function validateScheduleSourceUrl(rawUrl) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(cleanText(rawUrl));
+  } catch {
+    return { error: 'Invalid URL.' };
+  }
+
+  if (parsedUrl.protocol !== 'https:') {
+    return { error: 'Only HTTPS my.gwu.edu schedule pages are supported.' };
+  }
+
+  if (parsedUrl.hostname !== PARSE_URL_ALLOWED_HOST) {
+    return { error: 'Only my.gwu.edu schedule pages are supported.' };
+  }
+
+  if (parsedUrl.username || parsedUrl.password || parsedUrl.port) {
+    return { error: 'URL must not include credentials or a custom port.' };
+  }
+
+  const normalizedPath = parsedUrl.pathname.toLowerCase();
+  if (!PARSE_URL_ALLOWED_PATHS.has(normalizedPath)) {
+    return { error: 'URL must point to /mod/pws/print.cfm or /mod/pws/courses.cfm.' };
+  }
+
+  for (const key of parsedUrl.searchParams.keys()) {
+    if (!PARSE_URL_ALLOWED_QUERY_KEYS.has(key)) {
+      return { error: `Unsupported query parameter: ${key}.` };
+    }
+  }
+
+  const campIds = parsedUrl.searchParams.getAll('campId').map((value) => cleanText(value)).filter(Boolean);
+  const termIds = parsedUrl.searchParams.getAll('termId').map((value) => cleanText(value)).filter(Boolean);
+  const subjectIds = parsedUrl.searchParams.getAll('subjId').map((value) => cleanText(value)).filter(Boolean);
+
+  if (campIds.length !== 1 || termIds.length !== 1 || subjectIds.length !== 1) {
+    return { error: 'URL must include exactly one campId, termId, and subjId parameter.' };
+  }
+
+  const campId = campIds[0];
+  const termId = termIds[0];
+  const subjectId = subjectIds[0].toUpperCase();
+
+  if (!/^\d+$/.test(campId)) {
+    return { error: 'campId must be numeric.' };
+  }
+
+  if (!/^\d{6}$/.test(termId)) {
+    return { error: 'termId must be a 6-digit numeric value.' };
+  }
+
+  if (!/^[A-Z0-9]{1,8}$/.test(subjectId)) {
+    return { error: 'subjId must be 1-8 alphanumeric characters.' };
+  }
+
+  const canonicalUrl = new URL(parsedUrl.toString());
+  canonicalUrl.search = new URLSearchParams({
+    campId,
+    termId,
+    subjId: subjectId,
+  }).toString();
+  canonicalUrl.hash = '';
+
+  return { url: canonicalUrl };
+}
+
+async function fetchScheduleWithValidatedRedirects(startUrl) {
+  let currentUrl = startUrl;
+
+  for (let redirectCount = 0; redirectCount <= PARSE_URL_REDIRECT_LIMIT; redirectCount += 1) {
+    const response = await fetch(currentUrl, {
+      redirect: 'manual',
+      headers: {
+        'User-Agent': REQUEST_USER_AGENT,
+      },
+    });
+
+    if (response.status >= 300 && response.status < 400) {
+      const locationHeader = cleanText(response.headers.get('location'));
+      if (!locationHeader) {
+        return { error: 'GW returned a redirect without a location header.' };
+      }
+
+      let resolvedUrl;
+      try {
+        resolvedUrl = new URL(locationHeader, currentUrl).toString();
+      } catch {
+        return { error: 'GW returned an invalid redirect location.' };
+      }
+
+      const validatedRedirect = validateScheduleSourceUrl(resolvedUrl);
+      if (!validatedRedirect.url) {
+        return { error: validatedRedirect.error ?? 'GW redirected to a non-allowed schedule URL.' };
+      }
+
+      currentUrl = validatedRedirect.url.toString();
+      continue;
+    }
+
+    return { response, finalUrl: currentUrl };
+  }
+
+  return { error: `Too many redirects (max ${PARSE_URL_REDIRECT_LIMIT}).` };
+}
+
 function parseRowsFromHtml(html, rawUrl) {
   const parsedUrl = new URL(rawUrl);
   const fallbackSubject = cleanText(parsedUrl.searchParams.get('subjId')).toUpperCase();
@@ -656,7 +768,7 @@ function parseRowsFromHtml(html, rawUrl) {
     const fallbackDayTimeCell =
       cells.find((cell) => /[MTWRFSU]{1,7}\s*\d{1,2}:\d{2}\s*[AP]M/i.test(cell)) ?? '';
     const meetings = uniqueMeetings(parseMeetings(cells[8] ?? fallbackDayTimeCell));
-    const detailUrl = cleanText($(tdElements[2]).find('a').first().attr('href') ?? '');
+    const detailUrl = sanitizeDetailUrl($(tdElements[2]).find('a').first().attr('href') ?? '', rawUrl);
 
     const parsedRow = {
       id: `row-${index + 1}`,
@@ -1319,33 +1431,23 @@ app.post('/api/parse-url', async (req, res) => {
       return res.status(400).json({ error: 'Request body must include a non-empty url field.' });
     }
 
-    let parsedUrl;
-    try {
-      parsedUrl = new URL(rawUrl);
-    } catch {
-      return res.status(400).json({ error: 'Invalid URL.' });
+    const validatedUrl = validateScheduleSourceUrl(rawUrl);
+    if (!validatedUrl.url) {
+      return res.status(400).json({ error: validatedUrl.error ?? 'Invalid URL.' });
     }
 
-    if (parsedUrl.hostname !== 'my.gwu.edu') {
-      return res.status(400).json({ error: 'Only my.gwu.edu schedule pages are supported.' });
+    const fetchResult = await fetchScheduleWithValidatedRedirects(validatedUrl.url.toString());
+    if (!fetchResult.response) {
+      return res.status(502).json({ error: fetchResult.error ?? 'Failed to fetch the GW schedule page.' });
     }
-
-    if (!parsedUrl.pathname.includes('/mod/pws/')) {
-      return res.status(400).json({ error: 'URL must point to a GW PWS course listing page.' });
-    }
-
-    const response = await fetch(rawUrl, {
-      headers: {
-        'User-Agent': 'class-schedule-visualizer/1.0',
-      },
-    });
+    const { response, finalUrl } = fetchResult;
 
     if (!response.ok) {
       return res.status(502).json({ error: `GW returned HTTP ${response.status}.` });
     }
 
     const html = await response.text();
-    const parsed = parseAndMerge(html, rawUrl);
+    const parsed = parseAndMerge(html, finalUrl);
 
     if (parsed.courses.length === 0) {
       return res.status(422).json({

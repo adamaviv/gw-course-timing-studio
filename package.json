@@ -7,7 +7,10 @@
     "dev": "NODE_ENV=development nodemon server/index.js",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "NODE_ENV=production node server/index.js"
+    "start": "NODE_ENV=production node server/index.js",
+    "test": "npm run test:security-phase1 && npm run test:security-phase2",
+    "test:security-phase1": "node scripts/security-phase1-tests.mjs",
+    "test:security-phase2": "node scripts/security-phase2-tests.mjs"
   },
   "dependencies": {
     "cheerio": "^1.1.2",
