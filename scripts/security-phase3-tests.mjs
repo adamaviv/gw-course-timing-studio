@@ -8,6 +8,7 @@ process.env.UPSTREAM_MAX_RESPONSE_BYTES = '1024';
 process.env.API_RATE_LIMIT_WINDOW_MS = '60000';
 process.env.API_RATE_LIMIT_PARSE_MAX = '2';
 process.env.API_RATE_LIMIT_SUBJECTS_MAX = '2';
+process.env.TRUST_PROXY = '1';
 
 const { app } = await import('../server/index.js');
 

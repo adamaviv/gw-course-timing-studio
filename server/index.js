@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import * as cheerio from 'cheerio';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -85,6 +86,10 @@ const DAY_NAMES = {
 const PARSE_URL_ALLOWED_HOST = 'my.gwu.edu';
 const PARSE_URL_ALLOWED_PATHS = new Set(['/mod/pws/print.cfm', '/mod/pws/courses.cfm']);
 const PARSE_URL_ALLOWED_QUERY_KEYS = new Set(['campId', 'termId', 'subjId']);
+const SUBJECTS_URL_ALLOWED_PATH = '/mod/pws/subjects.cfm';
+const SUBJECTS_URL_ALLOWED_QUERY_KEYS = new Set(['campId', 'termId']);
+const SUBJECTS_LINK_ALLOWED_PATH = '/mod/pws/courses.cfm';
+const SUBJECTS_LINK_ALLOWED_QUERY_KEYS = new Set(['campId', 'termId', 'subjId']);
 const PARSE_URL_REDIRECT_LIMIT = 3;
 const REQUEST_USER_AGENT = 'class-schedule-visualizer/1.0';
 const UPSTREAM_FETCH_TIMEOUT_MS = parsePositiveInt(process.env.UPSTREAM_FETCH_TIMEOUT_MS, 10_000);
@@ -92,10 +97,21 @@ const UPSTREAM_MAX_RESPONSE_BYTES = parsePositiveInt(process.env.UPSTREAM_MAX_RE
 const API_RATE_LIMIT_WINDOW_MS = parsePositiveInt(process.env.API_RATE_LIMIT_WINDOW_MS, 60_000);
 const API_RATE_LIMIT_PARSE_MAX = parsePositiveInt(process.env.API_RATE_LIMIT_PARSE_MAX, 30);
 const API_RATE_LIMIT_SUBJECTS_MAX = parsePositiveInt(process.env.API_RATE_LIMIT_SUBJECTS_MAX, 60);
+const API_RATE_LIMIT_BUCKET_CAP = parsePositiveInt(process.env.API_RATE_LIMIT_BUCKET_CAP, 5_000);
 const CORS_MAX_AGE_SECONDS = parsePositiveInt(process.env.CORS_MAX_AGE_SECONDS, 600);
 const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.ALLOWED_ORIGINS ?? '');
+const TRUST_PROXY = parseTrustProxy(process.env.TRUST_PROXY);
+const REQUEST_ID_HEADER_NAME = 'x-request-id';
+const REQUEST_ID_MAX_LENGTH = 128;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const app = express();
+app.disable('x-powered-by');
+if (TRUST_PROXY !== false) {
+  app.set('trust proxy', TRUST_PROXY);
+}
+app.use(assignRequestId);
+app.use('/api', applyApiNoStoreHeaders);
 app.use(helmet(buildHelmetOptions()));
 app.use(cors(corsOptionsDelegate));
 app.use('/api', enforceApiOriginAllowlist);
@@ -110,6 +126,118 @@ function parsePositiveInt(rawValue, fallback) {
     return fallback;
   }
   return parsed;
+}
+
+function parseTrustProxy(rawValue) {
+  const text = String(rawValue ?? '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const normalized = text.toLowerCase();
+  if (normalized === 'false' || normalized === '0' || normalized === 'off' || normalized === 'no') {
+    return false;
+  }
+  if (normalized === 'true' || normalized === '1' || normalized === 'on' || normalized === 'yes') {
+    return true;
+  }
+
+  if (/^\d+$/.test(text)) {
+    const hops = Number.parseInt(text, 10);
+    return hops > 0 ? hops : false;
+  }
+
+  if (text.includes(',')) {
+    const entries = text
+      .split(',')
+      .map((entry) => cleanText(entry))
+      .filter(Boolean);
+    return entries.length > 0 ? entries : false;
+  }
+
+  return text;
+}
+
+function normalizeRequestId(rawValue) {
+  const text = String(rawValue ?? '').trim();
+  if (!text || text.length > REQUEST_ID_MAX_LENGTH) {
+    return '';
+  }
+  if (!/^[A-Za-z0-9._:-]+$/.test(text)) {
+    return '';
+  }
+  return text;
+}
+
+function assignRequestId(req, res, next) {
+  const rawHeaderValue = req.headers?.[REQUEST_ID_HEADER_NAME];
+  const incomingRequestId = normalizeRequestId(Array.isArray(rawHeaderValue) ? rawHeaderValue[0] : rawHeaderValue);
+  const requestId = incomingRequestId || crypto.randomUUID();
+
+  req.requestId = requestId;
+  res.locals.requestId = requestId;
+  res.set('X-Request-Id', requestId);
+  next();
+}
+
+function applyApiNoStoreHeaders(_req, res, next) {
+  res.set('Cache-Control', 'no-store');
+  res.set('Pragma', 'no-cache');
+  next();
+}
+
+function requestIdFrom(req, res) {
+  return normalizeRequestId(res.locals?.requestId ?? req.requestId ?? '');
+}
+
+function buildJsonErrorBody(req, res, errorMessage) {
+  const requestId = requestIdFrom(req, res);
+  if (requestId) {
+    return {
+      error: errorMessage,
+      requestId,
+    };
+  }
+  return { error: errorMessage };
+}
+
+function sendJsonError(req, res, statusCode, errorMessage) {
+  return res.status(statusCode).json(buildJsonErrorBody(req, res, errorMessage));
+}
+
+function unknownServerErrorMessage(error) {
+  if (IS_PRODUCTION) {
+    return 'Internal server error.';
+  }
+  return error instanceof Error ? error.message : 'Unknown server error';
+}
+
+function serializeErrorForLog(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+  return {
+    message: String(error),
+  };
+}
+
+function logApiServerError(req, res, routeLabel, error) {
+  const payload = {
+    level: 'error',
+    event: 'api_request_failed',
+    route: routeLabel,
+    method: req.method,
+    path: req.originalUrl,
+    requestId: requestIdFrom(req, res),
+    timestamp: new Date().toISOString(),
+    error: serializeErrorForLog(error),
+  };
+  // eslint-disable-next-line no-console
+  console.error(JSON.stringify(payload));
 }
 
 function normalizeOrigin(originText) {
@@ -151,11 +279,7 @@ function requestOriginFromHost(req) {
     return '';
   }
 
-  const forwardedProto = cleanText(req.headers?.['x-forwarded-proto'] ?? '')
-    .split(',')[0]
-    .trim()
-    .toLowerCase();
-  const protocol = forwardedProto || (req.secure ? 'https' : 'http');
+  const protocol = cleanText(req.protocol).toLowerCase() === 'https' ? 'https' : 'http';
 
   return normalizeOrigin(`${protocol}://${host}`);
 }
@@ -200,9 +324,7 @@ function enforceApiOriginAllowlist(req, res, next) {
     return next();
   }
 
-  return res.status(403).json({
-    error: 'Origin not allowed by CORS policy.',
-  });
+  return sendJsonError(req, res, 403, 'Origin not allowed by CORS policy.');
 }
 
 function buildHelmetOptions() {
@@ -242,11 +364,38 @@ function cleanText(value) {
 }
 
 function clientAddressKey(req) {
-  const forwarded = cleanText(req.headers?.['x-forwarded-for'] ?? '');
-  if (forwarded) {
-    return forwarded.split(',')[0].trim();
-  }
   return cleanText(req.ip || req.socket?.remoteAddress || 'unknown');
+}
+
+function enforceRateLimitBucketCap(buckets, now, windowMs, bucketCap) {
+  if (bucketCap <= 0 || buckets.size <= bucketCap) {
+    return;
+  }
+
+  for (const [bucketKey, bucketValue] of buckets.entries()) {
+    if (now - bucketValue.windowStartMs >= windowMs) {
+      buckets.delete(bucketKey);
+    }
+  }
+
+  if (buckets.size <= bucketCap) {
+    return;
+  }
+
+  const overflowCount = buckets.size - bucketCap;
+  const sortedByLastSeen = [...buckets.entries()].sort((left, right) => {
+    const leftSeen = left[1]?.lastSeenMs ?? left[1]?.windowStartMs ?? 0;
+    const rightSeen = right[1]?.lastSeenMs ?? right[1]?.windowStartMs ?? 0;
+    return leftSeen - rightSeen;
+  });
+
+  for (let index = 0; index < overflowCount; index += 1) {
+    const entry = sortedByLastSeen[index];
+    if (!entry) {
+      break;
+    }
+    buckets.delete(entry[0]);
+  }
 }
 
 function createRateLimiter({ routeLabel, maxRequests, windowMs }) {
@@ -262,10 +411,12 @@ function createRateLimiter({ routeLabel, maxRequests, windowMs }) {
     const key = clientAddressKey(req);
     const existing = buckets.get(key);
     const isExpired = !existing || now - existing.windowStartMs >= windowMs;
-    const bucket = isExpired ? { windowStartMs: now, count: 0 } : existing;
+    const bucket = isExpired ? { windowStartMs: now, count: 0, lastSeenMs: now } : existing;
 
     bucket.count += 1;
+    bucket.lastSeenMs = now;
     buckets.set(key, bucket);
+    enforceRateLimitBucketCap(buckets, now, windowMs, API_RATE_LIMIT_BUCKET_CAP);
 
     const resetAtMs = bucket.windowStartMs + windowMs;
     const remaining = Math.max(0, maxRequests - bucket.count);
@@ -286,9 +437,12 @@ function createRateLimiter({ routeLabel, maxRequests, windowMs }) {
     if (bucket.count > maxRequests) {
       const retryAfterSec = Math.max(1, Math.ceil((resetAtMs - now) / 1000));
       res.set('Retry-After', String(retryAfterSec));
-      return res.status(429).json({
-        error: `Rate limit exceeded for ${routeLabel}. Max ${maxRequests} requests per ${Math.ceil(windowMs / 1000)} seconds.`,
-      });
+      return sendJsonError(
+        req,
+        res,
+        429,
+        `Rate limit exceeded for ${routeLabel}. Max ${maxRequests} requests per ${Math.ceil(windowMs / 1000)} seconds.`
+      );
     }
 
     return next();
@@ -822,6 +976,10 @@ function parseTermLabel(url, fullPageText) {
   return termId ? `Term ${termId}` : 'Unknown Term';
 }
 
+function isValidSubjectId(subjectId) {
+  return /^[A-Z0-9]{1,8}$/.test(subjectId);
+}
+
 function validateScheduleSourceUrl(rawUrl) {
   let parsedUrl;
   try {
@@ -873,7 +1031,7 @@ function validateScheduleSourceUrl(rawUrl) {
     return { error: 'termId must be a 6-digit numeric value.' };
   }
 
-  if (!/^[A-Z0-9]{1,8}$/.test(subjectId)) {
+  if (!isValidSubjectId(subjectId)) {
     return { error: 'subjId must be 1-8 alphanumeric characters.' };
   }
 
@@ -882,6 +1040,65 @@ function validateScheduleSourceUrl(rawUrl) {
     campId,
     termId,
     subjId: subjectId,
+  }).toString();
+  canonicalUrl.hash = '';
+
+  return { url: canonicalUrl };
+}
+
+function validateSubjectsSourceUrl(rawUrl) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(cleanText(rawUrl));
+  } catch {
+    return { error: 'Invalid URL.' };
+  }
+
+  if (parsedUrl.protocol !== 'https:') {
+    return { error: 'Only HTTPS my.gwu.edu subjects pages are supported.' };
+  }
+
+  if (parsedUrl.hostname !== PARSE_URL_ALLOWED_HOST) {
+    return { error: 'Only my.gwu.edu subjects pages are supported.' };
+  }
+
+  if (parsedUrl.username || parsedUrl.password || parsedUrl.port) {
+    return { error: 'URL must not include credentials or a custom port.' };
+  }
+
+  const normalizedPath = parsedUrl.pathname.toLowerCase();
+  if (normalizedPath !== SUBJECTS_URL_ALLOWED_PATH) {
+    return { error: 'URL must point to /mod/pws/subjects.cfm.' };
+  }
+
+  for (const key of parsedUrl.searchParams.keys()) {
+    if (!SUBJECTS_URL_ALLOWED_QUERY_KEYS.has(key)) {
+      return { error: `Unsupported query parameter: ${key}.` };
+    }
+  }
+
+  const campIds = parsedUrl.searchParams.getAll('campId').map((value) => cleanText(value)).filter(Boolean);
+  const termIds = parsedUrl.searchParams.getAll('termId').map((value) => cleanText(value)).filter(Boolean);
+
+  if (campIds.length !== 1 || termIds.length !== 1) {
+    return { error: 'URL must include exactly one campId and termId parameter.' };
+  }
+
+  const campId = campIds[0];
+  const termId = termIds[0];
+
+  if (!/^\d+$/.test(campId)) {
+    return { error: 'campId must be numeric.' };
+  }
+
+  if (!/^\d{6}$/.test(termId)) {
+    return { error: 'termId must be a 6-digit numeric value.' };
+  }
+
+  const canonicalUrl = new URL(parsedUrl.toString());
+  canonicalUrl.search = new URLSearchParams({
+    campId,
+    termId,
   }).toString();
   canonicalUrl.hash = '';
 
@@ -919,6 +1136,49 @@ async function fetchScheduleWithValidatedRedirects(startUrl) {
       const validatedRedirect = validateScheduleSourceUrl(resolvedUrl);
       if (!validatedRedirect.url) {
         return { error: validatedRedirect.error ?? 'GW redirected to a non-allowed schedule URL.' };
+      }
+
+      currentUrl = validatedRedirect.url.toString();
+      continue;
+    }
+
+    return { response, finalUrl: currentUrl };
+  }
+
+  return { error: `Too many redirects (max ${PARSE_URL_REDIRECT_LIMIT}).` };
+}
+
+async function fetchSubjectsWithValidatedRedirects(startUrl) {
+  let currentUrl = startUrl;
+
+  for (let redirectCount = 0; redirectCount <= PARSE_URL_REDIRECT_LIMIT; redirectCount += 1) {
+    const response = await fetchWithTimeout(
+      currentUrl,
+      {
+        redirect: 'manual',
+        headers: {
+          'User-Agent': REQUEST_USER_AGENT,
+        },
+      },
+      UPSTREAM_FETCH_TIMEOUT_MS
+    );
+
+    if (response.status >= 300 && response.status < 400) {
+      const locationHeader = cleanText(response.headers.get('location'));
+      if (!locationHeader) {
+        return { error: 'GW returned a redirect without a location header.' };
+      }
+
+      let resolvedUrl;
+      try {
+        resolvedUrl = new URL(locationHeader, currentUrl).toString();
+      } catch {
+        return { error: 'GW returned an invalid redirect location.' };
+      }
+
+      const validatedRedirect = validateSubjectsSourceUrl(resolvedUrl);
+      if (!validatedRedirect.url) {
+        return { error: validatedRedirect.error ?? 'GW redirected to a non-allowed subjects URL.' };
       }
 
       currentUrl = validatedRedirect.url.toString();
@@ -1643,12 +1903,35 @@ function parseSubjectsFromHtml(html, rawUrl) {
       return;
     }
 
-    if (!/\/mod\/pws\/courses\.cfm$/i.test(linkUrl.pathname)) {
+    if (!['http:', 'https:'].includes(linkUrl.protocol)) {
       return;
     }
 
-    const subjectId = cleanText(linkUrl.searchParams.get('subjId')).toUpperCase();
-    if (!subjectId) {
+    if (linkUrl.hostname.toLowerCase() !== PARSE_URL_ALLOWED_HOST) {
+      return;
+    }
+
+    if (linkUrl.username || linkUrl.password || linkUrl.port) {
+      return;
+    }
+
+    if (linkUrl.pathname.toLowerCase() !== SUBJECTS_LINK_ALLOWED_PATH) {
+      return;
+    }
+
+    for (const key of linkUrl.searchParams.keys()) {
+      if (!SUBJECTS_LINK_ALLOWED_QUERY_KEYS.has(key)) {
+        return;
+      }
+    }
+
+    const subjectIds = linkUrl.searchParams.getAll('subjId').map((value) => cleanText(value)).filter(Boolean);
+    if (subjectIds.length !== 1) {
+      return;
+    }
+
+    const subjectId = subjectIds[0].toUpperCase();
+    if (!isValidSubjectId(subjectId)) {
       return;
     }
 
@@ -1668,41 +1951,43 @@ app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
     const campId = cleanText(req.query?.campId) || '1';
     const termId = cleanText(req.query?.termId) || '202601';
 
-    if (!/^\d+$/.test(campId) || !/^\d+$/.test(termId)) {
-      return res.status(400).json({ error: 'campId and termId must be numeric.' });
+    if (!/^\d+$/.test(campId)) {
+      return sendJsonError(req, res, 400, 'campId must be numeric.');
     }
 
-    const sourceUrl = `https://my.gwu.edu/mod/pws/subjects.cfm?campId=${encodeURIComponent(campId)}&termId=${encodeURIComponent(
-      termId
-    )}`;
-    const response = await fetchWithTimeout(
-      sourceUrl,
-      {
-        headers: {
-          'User-Agent': REQUEST_USER_AGENT,
-        },
-      },
-      UPSTREAM_FETCH_TIMEOUT_MS
-    );
+    if (!/^\d{6}$/.test(termId)) {
+      return sendJsonError(req, res, 400, 'termId must be a 6-digit numeric value.');
+    }
+
+    const rawSourceUrl = `https://my.gwu.edu/mod/pws/subjects.cfm?campId=${encodeURIComponent(
+      campId
+    )}&termId=${encodeURIComponent(termId)}`;
+    const validatedSourceUrl = validateSubjectsSourceUrl(rawSourceUrl);
+    if (!validatedSourceUrl.url) {
+      return sendJsonError(req, res, 400, validatedSourceUrl.error ?? 'Invalid subjects URL.');
+    }
+    const fetchResult = await fetchSubjectsWithValidatedRedirects(validatedSourceUrl.url.toString());
+    if (!fetchResult.response) {
+      return sendJsonError(req, res, 502, fetchResult.error ?? 'Failed to load subjects from GW.');
+    }
+    const { response, finalUrl } = fetchResult;
 
     if (!response.ok) {
-      return res.status(502).json({ error: `GW returned HTTP ${response.status} while loading subjects.` });
+      return sendJsonError(req, res, 502, `GW returned HTTP ${response.status} while loading subjects.`);
     }
 
     const html = await readResponseTextWithLimit(response, UPSTREAM_MAX_RESPONSE_BYTES);
-    const subjects = parseSubjectsFromHtml(html, sourceUrl);
+    const subjects = parseSubjectsFromHtml(html, finalUrl);
 
     if (subjects.length === 0) {
       const campusLabel = CAMPUS_LABELS[campId] ?? `Campus ${campId}`;
       const termLabel = TERM_LABELS[termId] ?? `Term ${termId}`;
-      return res.status(422).json({
-        error: `No subjects are currently published for ${termLabel} at ${campusLabel}.`,
-      });
+      return sendJsonError(req, res, 422, `No subjects are currently published for ${termLabel} at ${campusLabel}.`);
     }
 
     return res.json({
       meta: {
-        sourceUrl,
+        sourceUrl: finalUrl,
         campId,
         campusLabel: CAMPUS_LABELS[campId] ?? `Campus ${campId}`,
         termId,
@@ -1714,12 +1999,13 @@ app.get('/api/subjects', subjectsRateLimiter, async (req, res) => {
     });
   } catch (error) {
     if (error instanceof UpstreamTimeoutError) {
-      return res.status(504).json({ error: error.message });
+      return sendJsonError(req, res, 504, error.message);
     }
     if (error instanceof UpstreamResponseTooLargeError) {
-      return res.status(502).json({ error: error.message });
+      return sendJsonError(req, res, 502, error.message);
     }
-    return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown server error' });
+    logApiServerError(req, res, '/api/subjects', error);
+    return sendJsonError(req, res, 500, unknownServerErrorMessage(error));
   }
 });
 
@@ -1727,43 +2013,46 @@ app.post('/api/parse-url', parseUrlRateLimiter, async (req, res) => {
   try {
     const rawUrl = cleanText(req.body?.url);
     if (!rawUrl) {
-      return res.status(400).json({ error: 'Request body must include a non-empty url field.' });
+      return sendJsonError(req, res, 400, 'Request body must include a non-empty url field.');
     }
 
     const validatedUrl = validateScheduleSourceUrl(rawUrl);
     if (!validatedUrl.url) {
-      return res.status(400).json({ error: validatedUrl.error ?? 'Invalid URL.' });
+      return sendJsonError(req, res, 400, validatedUrl.error ?? 'Invalid URL.');
     }
 
     const fetchResult = await fetchScheduleWithValidatedRedirects(validatedUrl.url.toString());
     if (!fetchResult.response) {
-      return res.status(502).json({ error: fetchResult.error ?? 'Failed to fetch the GW schedule page.' });
+      return sendJsonError(req, res, 502, fetchResult.error ?? 'Failed to fetch the GW schedule page.');
     }
     const { response, finalUrl } = fetchResult;
 
     if (!response.ok) {
-      return res.status(502).json({ error: `GW returned HTTP ${response.status}.` });
+      return sendJsonError(req, res, 502, `GW returned HTTP ${response.status}.`);
     }
 
     const html = await readResponseTextWithLimit(response, UPSTREAM_MAX_RESPONSE_BYTES);
     const parsed = parseAndMerge(html, finalUrl);
 
     if (parsed.courses.length === 0) {
-      return res.status(422).json({
-        error:
-          'No classes are currently published for this selection. Try a different term, campus, or subject.',
-      });
+      return sendJsonError(
+        req,
+        res,
+        422,
+        'No classes are currently published for this selection. Try a different term, campus, or subject.'
+      );
     }
 
     return res.json(parsed);
   } catch (error) {
     if (error instanceof UpstreamTimeoutError) {
-      return res.status(504).json({ error: error.message });
+      return sendJsonError(req, res, 504, error.message);
     }
     if (error instanceof UpstreamResponseTooLargeError) {
-      return res.status(502).json({ error: error.message });
+      return sendJsonError(req, res, 502, error.message);
     }
-    return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown server error' });
+    logApiServerError(req, res, '/api/parse-url', error);
+    return sendJsonError(req, res, 500, unknownServerErrorMessage(error));
   }
 });
 

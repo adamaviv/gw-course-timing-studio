@@ -36,23 +36,27 @@ cp .env.example .env
 Supported settings:
 
 - `ALLOWED_ORIGINS`: Comma-separated frontend origin allowlist for API CORS checks
+- `TRUST_PROXY`: Whether to trust `x-forwarded-*` headers (`0`/`false` by default)
 - `CORS_MAX_AGE_SECONDS`: Preflight cache time
 - `UPSTREAM_FETCH_TIMEOUT_MS`: Timeout for upstream GW fetches
 - `UPSTREAM_MAX_RESPONSE_BYTES`: Max upstream response size accepted before parsing
 - `API_RATE_LIMIT_WINDOW_MS`: Rate-limit window size
 - `API_RATE_LIMIT_PARSE_MAX`: Max `/api/parse-url` requests per window per client
 - `API_RATE_LIMIT_SUBJECTS_MAX`: Max `/api/subjects` requests per window per client
+- `API_RATE_LIMIT_BUCKET_CAP`: Max in-memory rate-limit buckets before eviction
 
 Default local values in `.env.example`:
 
 ```dotenv
 ALLOWED_ORIGINS=http://localhost:8787,http://127.0.0.1:8787
+TRUST_PROXY=0
 CORS_MAX_AGE_SECONDS=600
 UPSTREAM_FETCH_TIMEOUT_MS=10000
 UPSTREAM_MAX_RESPONSE_BYTES=2097152
 API_RATE_LIMIT_WINDOW_MS=60000
 API_RATE_LIMIT_PARSE_MAX=30
 API_RATE_LIMIT_SUBJECTS_MAX=60
+API_RATE_LIMIT_BUCKET_CAP=5000
 ```
 
 For local testing, `.env` in this repo is configured with localhost origins and moderate limits.
@@ -86,6 +90,10 @@ npm run test:security-phase1
 npm run test:security-phase2
 npm run test:security-phase3
 npm run test:security-phase4
+npm run test:security-phase5
+npm run test:security-phase6
+npm run test:security-phase7
+npm run test:security-phase8
 ```
 
 Each suite prints test descriptions with explicit `PASS`/`FAIL` status and exits non-zero on failure.
@@ -113,5 +121,7 @@ Response contains:
 
 - The backend intentionally fetches GW pages server-side to avoid browser CORS issues.
 - API requests now enforce a strict origin allowlist via `ALLOWED_ORIGINS` and apply security headers via `helmet`.
+- API responses now include an `x-request-id` header; error bodies include `requestId` for traceability.
+- Production 500 responses are intentionally generic (`Internal server error.`) to avoid leaking internals.
 - Subject options are loaded dynamically from GW `subjects.cfm` for the selected `termId` + `campId`.
 - Courses without parseable meeting times (e.g., ARR/TBA) are excluded from results.
