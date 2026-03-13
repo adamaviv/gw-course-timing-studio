@@ -725,7 +725,8 @@ button:disabled {
   overflow: hidden;
 }
 
-.event-campus {
+.event-campus,
+.event-instructor {
   font-size: 0.64rem;
   opacity: 0.9;
   margin-bottom: 0.12rem;

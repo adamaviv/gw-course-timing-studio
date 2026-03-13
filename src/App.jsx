@@ -4,7 +4,7 @@ import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 // Update these defaults each scheduling cycle.
 const DEFAULT_SELECTION = {
   campusId: '1',
-  termId: '202601',
+  termId: '202603',
   subjectId: 'CSCI',
 };
 
@@ -1720,7 +1720,7 @@ function App() {
                               width: `${event.widthPct}%`,
                               backgroundColor: event.color,
                             }}
-                            title={`${event.courseNumber} | ${event.title} | ${event.startLabel} - ${event.endLabel}${event.campusLabel ? ` | ${event.campusLabel}` : ''}`}
+                            title={`${event.courseNumber} | ${event.title} | ${event.startLabel} - ${event.endLabel}${event.campusLabel ? ` | ${event.campusLabel}` : ''}${event.instructor ? ` | ${event.instructor}` : ''}`}
                             role="button"
                             tabIndex={0}
                             onClick={(mouseEvent) => openCourseDetails(event.courseId, mouseEvent.currentTarget)}
@@ -1735,6 +1735,9 @@ function App() {
                             <p className="event-title">{event.title}</p>
                             {event.campusLabel ? (
                               <p className="event-campus">{event.campusLabel}</p>
+                            ) : null}
+                            {event.instructor ? (
+                              <p className="event-instructor">{event.instructor}</p>
                             ) : null}
                             <p>{event.startLabel}</p>
                             <p>{event.endLabel}</p>
