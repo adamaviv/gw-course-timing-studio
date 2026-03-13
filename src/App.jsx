@@ -455,6 +455,7 @@ function App() {
   const [collapsedFrameKeys, setCollapsedFrameKeys] = useState(() => new Set());
   const [recentSubjects, setRecentSubjects] = useState([]);
   const [recentSubjectsLoaded, setRecentSubjectsLoaded] = useState(false);
+  const [storageRecoveryNeeded, setStorageRecoveryNeeded] = useState(false);
   const [draggedPinnedKey, setDraggedPinnedKey] = useState(null);
   const [dragOverPinnedKey, setDragOverPinnedKey] = useState(null);
   const [isSelectedFrameCollapsed, setIsSelectedFrameCollapsed] = useState(false);
@@ -533,8 +534,11 @@ function App() {
     try {
       const parsed = JSON.parse(window.localStorage.getItem(RECENT_SUBJECTS_STORAGE_KEY) || '[]');
       setRecentSubjects(sanitizeRecentSubjects(parsed));
+      setStorageRecoveryNeeded(false);
     } catch {
       setRecentSubjects([]);
+      setStorageRecoveryNeeded(true);
+      setError('Saved browser data could not be read. Clear local storage to recover.');
     } finally {
       setRecentSubjectsLoaded(true);
     }
@@ -544,7 +548,13 @@ function App() {
     if (typeof window === 'undefined' || !recentSubjectsLoaded) {
       return;
     }
-    window.localStorage.setItem(RECENT_SUBJECTS_STORAGE_KEY, JSON.stringify(recentSubjects));
+    try {
+      window.localStorage.setItem(RECENT_SUBJECTS_STORAGE_KEY, JSON.stringify(recentSubjects));
+      setStorageRecoveryNeeded(false);
+    } catch {
+      setStorageRecoveryNeeded(true);
+      setError('Saved browser data could not be updated. Clear local storage to continue.');
+    }
   }, [recentSubjects, recentSubjectsLoaded]);
 
   const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
@@ -945,6 +955,22 @@ function App() {
       return 'No classes are currently published for this selection. Try a different term, campus, or subject.';
     }
     return message;
+  }
+
+  function clearBrowserLocalStorage() {
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.clear();
+      } catch {
+        // Ignore if localStorage is inaccessible.
+      }
+    }
+
+    setRecentSubjects([]);
+    setStorageRecoveryNeeded(false);
+    setDraggedPinnedKey(null);
+    setDragOverPinnedKey(null);
+    setError('');
   }
 
   async function loadSubjectFrame(targetCampusId, targetTermId, targetSubjectId) {
@@ -1492,7 +1518,16 @@ function App() {
         </section>
       </header>
 
-      {error ? <div className="error-box">{error}</div> : null}
+      {error ? (
+        <div className="error-box">
+          <p>{error}</p>
+          {storageRecoveryNeeded ? (
+            <button type="button" className="error-recovery-button" onClick={clearBrowserLocalStorage}>
+              Clear Local Storage
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {subjectFrames.length > 0 ? (
         <main className="workspace">

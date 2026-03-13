@@ -25,6 +25,7 @@ const AUDIT_CONFIG = {
   subjectId: String(process.env.USABILITY_SUBJECT_ID || 'CSCI').toUpperCase(),
   screenshotPath: process.env.USABILITY_SCREENSHOT_PATH || '/tmp/usability-audit-failure.png',
 };
+const RECENT_SUBJECTS_STORAGE_KEY = 'gw-course-studio-recent-subjects-v1';
 
 function assert(condition, message) {
   if (!condition) {
@@ -82,7 +83,69 @@ async function runStep(step, context, failures) {
   }
 }
 
+async function assertStorageRecoveryScenario({ browser, baseUrl, initScript }) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+
+  try {
+    if (initScript) {
+      await page.addInitScript(initScript, RECENT_SUBJECTS_STORAGE_KEY);
+    }
+    const response = await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    assert(response && response.ok(), `Expected HTTP 200 from home page, got ${response?.status?.() ?? 'unknown'}.`);
+
+    const errorBox = page.locator('.error-box');
+    await errorBox.waitFor({ timeout: 15000 });
+
+    const recoveryButton = page.getByRole('button', { name: 'Clear Local Storage' });
+    await recoveryButton.waitFor({ timeout: 10000 });
+    await recoveryButton.click();
+  } finally {
+    await context.close();
+  }
+}
+
 const STEPS = [
+  {
+    description: 'Storage recovery button appears for corrupted and out-of-sync local storage',
+    run: async ({ browser, baseUrl }) => {
+      await assertStorageRecoveryScenario({
+        browser,
+        baseUrl,
+        initScript: (storageKey) => {
+          window.localStorage.setItem(storageKey, '{corrupted-json');
+          const originalSetItem = window.Storage.prototype.setItem;
+          Object.defineProperty(window.Storage.prototype, 'setItem', {
+            configurable: true,
+            value: function setItemWithFailure(key, value) {
+              if (String(key) === storageKey) {
+                throw new Error('Simulated localStorage write failure after corrupted read');
+              }
+              return originalSetItem.call(this, key, value);
+            },
+          });
+        },
+      });
+
+      await assertStorageRecoveryScenario({
+        browser,
+        baseUrl,
+        initScript: (storageKey) => {
+          window.localStorage.setItem(storageKey, '[]');
+          const originalSetItem = window.Storage.prototype.setItem;
+          Object.defineProperty(window.Storage.prototype, 'setItem', {
+            configurable: true,
+            value: function setItemWithFailure(key, value) {
+              if (String(key) === storageKey) {
+                throw new Error('Simulated localStorage out-of-sync/write failure');
+              }
+              return originalSetItem.call(this, key, value);
+            },
+          });
+        },
+      });
+    },
+  },
   {
     description: 'Home page renders title and initial controls',
     run: async ({ page }) => {
@@ -211,7 +274,7 @@ async function run() {
     });
 
     for (const step of STEPS) {
-      await runStep(step, { page }, failures);
+      await runStep(step, { page, browser, baseUrl }, failures);
       if (failures.length > 0) {
         break;
       }

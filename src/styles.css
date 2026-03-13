@@ -267,6 +267,24 @@ button:disabled {
   color: var(--danger);
   border-color: #ffccd5;
   background: #fff1f2;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.error-box p {
+  margin: 0;
+}
+
+.error-recovery-button {
+  justify-self: start;
+  background: #b00020;
+  color: #fff;
+  font-size: 0.82rem;
+  padding: 0.42rem 0.6rem;
+}
+
+.error-recovery-button:hover {
+  background: #8f001b;
 }
 
 .workspace {
