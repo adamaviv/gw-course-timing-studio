@@ -99,7 +99,17 @@ async function assertStorageRecoveryScenario({ browser, baseUrl, initScript }) {
 
     const recoveryButton = page.getByRole('button', { name: 'Clear Local Storage' });
     await recoveryButton.waitFor({ timeout: 10000 });
+
+    const storageValueBeforeClear = await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), RECENT_SUBJECTS_STORAGE_KEY);
     await recoveryButton.click();
+    await errorBox.waitFor({ state: 'hidden', timeout: 10000 });
+
+    const storageValueAfterClear = await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), RECENT_SUBJECTS_STORAGE_KEY);
+    const isClearedState = storageValueAfterClear == null || storageValueAfterClear === '[]';
+    assert(
+      isClearedState,
+      `Expected local storage to be cleared/reset after recovery. before=${String(storageValueBeforeClear)} after=${String(storageValueAfterClear)}`
+    );
   } finally {
     await context.close();
   }
@@ -107,23 +117,14 @@ async function assertStorageRecoveryScenario({ browser, baseUrl, initScript }) {
 
 const STEPS = [
   {
-    description: 'Storage recovery button appears for corrupted and out-of-sync local storage',
+    description: 'Storage recovery button appears for mangled or out-of-sync local storage and clears state',
     run: async ({ browser, baseUrl }) => {
       await assertStorageRecoveryScenario({
         browser,
         baseUrl,
         initScript: (storageKey) => {
+          window.localStorage.removeItem(storageKey);
           window.localStorage.setItem(storageKey, '{corrupted-json');
-          const originalSetItem = window.Storage.prototype.setItem;
-          Object.defineProperty(window.Storage.prototype, 'setItem', {
-            configurable: true,
-            value: function setItemWithFailure(key, value) {
-              if (String(key) === storageKey) {
-                throw new Error('Simulated localStorage write failure after corrupted read');
-              }
-              return originalSetItem.call(this, key, value);
-            },
-          });
         },
       });
 
@@ -133,10 +134,12 @@ const STEPS = [
         initScript: (storageKey) => {
           window.localStorage.setItem(storageKey, '[]');
           const originalSetItem = window.Storage.prototype.setItem;
+          let failedOnce = false;
           Object.defineProperty(window.Storage.prototype, 'setItem', {
             configurable: true,
             value: function setItemWithFailure(key, value) {
-              if (String(key) === storageKey) {
+              if (String(key) === storageKey && !failedOnce) {
+                failedOnce = true;
                 throw new Error('Simulated localStorage out-of-sync/write failure');
               }
               return originalSetItem.call(this, key, value);

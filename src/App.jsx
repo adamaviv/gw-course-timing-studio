@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
+import { getRecoveryReloadHint } from '../shared/recoveryHints.js';
 
 // Update these defaults each scheduling cycle.
 const DEFAULT_SELECTION = {
@@ -550,7 +551,6 @@ function App() {
     }
     try {
       window.localStorage.setItem(RECENT_SUBJECTS_STORAGE_KEY, JSON.stringify(recentSubjects));
-      setStorageRecoveryNeeded(false);
     } catch {
       setStorageRecoveryNeeded(true);
       setError('Saved browser data could not be updated. Clear local storage to continue.');
@@ -558,6 +558,7 @@ function App() {
   }, [recentSubjects, recentSubjectsLoaded]);
 
   const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
+  const recoveryReloadHint = useMemo(() => getRecoveryReloadHint(), []);
   const orderedRecentSubjects = useMemo(() => {
     const pinned = [];
     const unpinned = [];
@@ -971,6 +972,12 @@ function App() {
     setDraggedPinnedKey(null);
     setDragOverPinnedKey(null);
     setError('');
+  }
+
+  function reloadCurrentPage() {
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
   }
 
   async function loadSubjectFrame(targetCampusId, targetTermId, targetSubjectId) {
@@ -1522,9 +1529,17 @@ function App() {
         <div className="error-box">
           <p>{error}</p>
           {storageRecoveryNeeded ? (
-            <button type="button" className="error-recovery-button" onClick={clearBrowserLocalStorage}>
-              Clear Local Storage
-            </button>
+            <>
+              <p className="error-recovery-hint">{recoveryReloadHint}</p>
+              <div className="error-recovery-actions">
+                <button type="button" className="error-recovery-button" onClick={clearBrowserLocalStorage}>
+                  Clear Local Storage
+                </button>
+                <button type="button" className="error-reload-button" onClick={reloadCurrentPage}>
+                  Reload Page
+                </button>
+              </div>
+            </>
           ) : null}
         </div>
       ) : null}

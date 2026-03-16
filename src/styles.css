@@ -275,8 +275,19 @@ button:disabled {
   margin: 0;
 }
 
+.error-recovery-hint {
+  color: #3e4c56;
+  font-size: 0.84rem;
+}
+
+.error-recovery-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 .error-recovery-button {
-  justify-self: start;
   background: #b00020;
   color: #fff;
   font-size: 0.82rem;
@@ -285,6 +296,17 @@ button:disabled {
 
 .error-recovery-button:hover {
   background: #8f001b;
+}
+
+.error-reload-button {
+  background: #2f3f4a;
+  color: #fff;
+  font-size: 0.82rem;
+  padding: 0.42rem 0.6rem;
+}
+
+.error-reload-button:hover {
+  background: #22303a;
 }
 
 .workspace {

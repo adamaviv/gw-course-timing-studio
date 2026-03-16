@@ -2072,8 +2072,30 @@ async function configureFrontendRoutes(httpServer) {
       return;
     }
 
-    app.use(express.static(distPath));
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-store');
+            return;
+          }
+          if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+        },
+      })
+    );
+
+    app.get(/^\/assets\/.+/, (_req, res) => {
+      res.status(404).type('text/plain').send('Asset not found.');
+    });
+
+    app.get(/^\/(?!api\/).+\.[^/]+$/, (_req, res) => {
+      res.status(404).type('text/plain').send('Not found.');
+    });
+
     app.get(/^(?!\/api).*/, (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(distPath, 'index.html'));
     });
     return;
