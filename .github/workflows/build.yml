@@ -1,4 +1,4 @@
-name: Security Test Suite
+name: Build
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  security-tests:
+  build:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -29,5 +29,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run security tests
-        run: npm run test
+      - name: Show computed app version
+        run: node scripts/app-version.mjs
+
+      - name: Build app
+        run: npm run build

@@ -116,6 +116,17 @@ Supported settings:
 - `npm start`: start production server (expects `dist/` to exist).
 - `npm test`: run all security test phases (`test:security-phase1` ... `test:security-phase8`).
 - `npm run test:usability`: run Playwright-based usability audit.
+- `node scripts/app-version.mjs`: print the computed UI version from git tags/history.
+
+## Versioning
+
+- Base tag format is `v<major>.<minor>` (example: `v0.1`).
+- UI version shown in the bottom-right is computed from git history:
+  - exactly at tag commit: `v0.1`
+  - one commit after tag: `v0.1.1`
+  - two commits after tag: `v0.1.2`
+- You can override the base tag selection in CI/local with `APP_VERSION_BASE_TAG`.
+- You can force an explicit value with `VITE_APP_VERSION`.
 
 ## Testing
 
@@ -144,17 +155,19 @@ npx playwright install chromium
 
 ## CI Workflows
 
-Two GitHub Actions workflows are configured:
+Three GitHub Actions workflows are configured:
 
+- [`build.yml`](.github/workflows/build.yml)
 - [`security-tests.yml`](.github/workflows/security-tests.yml)
 - [`usability-tests.yml`](.github/workflows/usability-tests.yml)
 
-Both workflows:
+All workflows:
 
 - run on `push` to `main`
 - run on `pull_request` targeting `main` or `production`
 - support manual runs via `workflow_dispatch`
 - use `actions/checkout@v6` + `actions/setup-node@v6`
+- fetch full git history/tags (`fetch-depth: 0`) so version computation is accurate in CI
 
 ## API
 

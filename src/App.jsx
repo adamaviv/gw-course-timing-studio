@@ -8,7 +8,7 @@ const DEFAULT_SELECTION = {
   termId: '202603',
   subjectId: 'CSCI',
 };
-const APP_VERSION = 'v0.1';
+const APP_VERSION = typeof __APP_VERSION__ === 'string' && __APP_VERSION__.trim() ? __APP_VERSION__.trim() : 'v0.1';
 const APP_REPO_URL = 'https://github.com/adamaviv/gw-course-timing-studio';
 
 const TERM_OPTIONS = [
