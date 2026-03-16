@@ -1,14 +1,76 @@
-# GW Class Schedule Visualizer
+# GW Course Studio
 
-This project now includes a React web app + Express parser API that:
+GW Course Studio is a React + Express application for exploring GW course schedules by term, campus, and subject, then visualizing selected sections in a calendar-style weekly layout.
 
-- Lets users select GW `term`, `campus`, and `subject` to build the schedule URL automatically
-- Parses classes and meeting times
-- Applies cross-list merge rules modeled after `generate_seas_instructor_courses.py`
-- Renders selected classes in a weekly calendar layout
-- Highlights overlapping class times to surface conflicts
+## AI Assistance Disclaimer
 
-## Run locally
+This project was built with AI-assisted development support.
+
+- Primary assistant: OpenAI Codex
+- Model generation used for assistance in this workspace: GPT-5
+
+## Current Feature Set
+
+- Term/campus/subject selector that builds the GW schedule URL automatically.
+- Dynamic subject lookup from GW `subjects.cfm` via `GET /api/subjects`.
+- Multi-subject loading in one term (supports mixing campuses in the same term).
+- Per-subject navigation frames with:
+  - search/filter
+  - select all / clear selections
+  - removable subject frame
+  - double-click collapse/expand
+- Dedicated `Selected` frame that mirrors all currently selected classes.
+- Course calendar with:
+  - fixed 8:00 AM to 10:00 PM grid
+  - week view + single-day focus toggle
+  - conflict highlighting for overlapping events
+  - class color-coding
+  - course name, campus, and instructor shown on events
+- Linked-course controls:
+  - show/hide linked sections
+  - select linked / unselect linked
+  - linked rows styled as nested/related entries
+- Cross-listed course normalization:
+  - merged duplicate cross-listed offerings
+  - CRN-aware dedupe and merged registration details
+  - title/instructor/comment aggregation across merged rows
+- Cancelled-course handling:
+  - hidden by default
+  - optional toggle to display in list
+  - clearly marked as not schedulable
+- Details modal/popover:
+  - anchored near the clicked calendar/list item
+  - CRNs, sections, instructors, notes/comments, title variants, and campus
+  - action to unselect from modal when opened from a selected event
+- Recent subjects (local storage):
+  - quick re-load
+  - pin/unpin
+  - drag-reorder pinned entries
+  - remove recent entries
+- Storage recovery UX:
+  - clear local storage button when saved data is corrupted/out-of-sync
+  - reload guidance + fallback recovery UI
+
+## Parsing and Merge Behavior
+
+- Day parsing supports `M T W R F S U` (`R` = Thursday) and combinations like `TR`, `MW`.
+- Meeting-time parsing supports schedule rows where day and time may be split across lines.
+- Courses with no meetings are excluded from schedulable rendering, except cancelled rows (for optional list display).
+- Structured relation hints are respected:
+  - `LINKED COURSES` => linked/lab relation
+  - `CROSS LISTED COURSES` => cross-listed relation
+- Cross-listing uses structured grouping first, then explicit exception merges and CRN-overlap consolidation.
+- Dedupe is CRN-driven to prevent duplicate side-list rows and duplicate calendar events.
+- When cross-listed titles differ, a preferred title is selected while retaining title details for reference.
+
+## Architecture
+
+- Single Node.js entrypoint: [`server/index.js`](server/index.js)
+- Frontend: React + Vite
+- Backend: Express API + GW upstream fetch/parsing
+- Production serves built frontend from `dist/` and API from the same process/port.
+
+## Run Locally
 
 1. Install dependencies:
 
@@ -16,18 +78,20 @@ This project now includes a React web app + Express parser API that:
 npm install
 ```
 
-2. Start the single Node server (API + frontend on one port):
+2. Start development server:
 
 ```bash
 npm run dev
 ```
 
-- App + API: `http://localhost:8787`
-- API endpoint: `http://localhost:8787/api/parse-url`
+3. Open:
 
-## Environment variables
+- App: `http://localhost:8787`
+- API (example): `http://localhost:8787/api/subjects?campId=1&termId=202601`
 
-Copy `.env.example` to `.env` for local development:
+## Environment Variables
+
+Copy `.env.example` to `.env`:
 
 ```bash
 cp .env.example .env
@@ -35,93 +99,88 @@ cp .env.example .env
 
 Supported settings:
 
-- `ALLOWED_ORIGINS`: Comma-separated frontend origin allowlist for API CORS checks
-- `TRUST_PROXY`: Whether to trust `x-forwarded-*` headers (`0`/`false` by default)
-- `CORS_MAX_AGE_SECONDS`: Preflight cache time
-- `UPSTREAM_FETCH_TIMEOUT_MS`: Timeout for upstream GW fetches
-- `UPSTREAM_MAX_RESPONSE_BYTES`: Max upstream response size accepted before parsing
-- `API_RATE_LIMIT_WINDOW_MS`: Rate-limit window size
-- `API_RATE_LIMIT_PARSE_MAX`: Max `/api/parse-url` requests per window per client
-- `API_RATE_LIMIT_SUBJECTS_MAX`: Max `/api/subjects` requests per window per client
-- `API_RATE_LIMIT_BUCKET_CAP`: Max in-memory rate-limit buckets before eviction
+- `ALLOWED_ORIGINS`
+- `TRUST_PROXY`
+- `CORS_MAX_AGE_SECONDS`
+- `UPSTREAM_FETCH_TIMEOUT_MS`
+- `UPSTREAM_MAX_RESPONSE_BYTES`
+- `API_RATE_LIMIT_WINDOW_MS`
+- `API_RATE_LIMIT_PARSE_MAX`
+- `API_RATE_LIMIT_SUBJECTS_MAX`
+- `API_RATE_LIMIT_BUCKET_CAP`
 
-Default local values in `.env.example`:
+## Scripts
 
-```dotenv
-ALLOWED_ORIGINS=http://localhost:8787,http://127.0.0.1:8787
-TRUST_PROXY=0
-CORS_MAX_AGE_SECONDS=600
-UPSTREAM_FETCH_TIMEOUT_MS=10000
-UPSTREAM_MAX_RESPONSE_BYTES=2097152
-API_RATE_LIMIT_WINDOW_MS=60000
-API_RATE_LIMIT_PARSE_MAX=30
-API_RATE_LIMIT_SUBJECTS_MAX=60
-API_RATE_LIMIT_BUCKET_CAP=5000
-```
+- `npm run dev`: start app + API in development mode.
+- `npm run build`: build frontend assets.
+- `npm start`: start production server (expects `dist/` to exist).
+- `npm test`: run all security test phases (`test:security-phase1` ... `test:security-phase8`).
+- `npm run test:usability`: run Playwright-based usability audit.
 
-For local testing, `.env` in this repo is configured with localhost origins and moderate limits.
+## Testing
 
-## Production-style run
+### Security Suite
 
-```bash
-npm run build
-npm start
-```
+- Command: `npm test`
+- Coverage includes request validation, CORS/origin controls, rate limits, redirect handling, response redaction, and header hardening.
+- Security scripts exit non-zero on failure, so CI fails correctly.
 
-`npm start` runs one Node process (`server/index.js`) on one port and serves:
+### Usability Suite
 
-- `POST /api/parse-url`
-- built frontend from `dist/`
-
-The server binds to `process.env.PORT` (defaults to `8787`), which matches Firebase/App Hosting and Cloud Run style deployments.
-
-## Security testing
-
-Run all security suites:
+- Command: `npm run test:usability`
+- Uses Playwright to verify key UX flows, including storage-recovery behavior.
+- Requires Playwright Chromium:
 
 ```bash
-npm test
+npx playwright install chromium
 ```
 
-Run suites individually:
+- Optional usability env overrides:
+  - `USABILITY_BASE_URL`
+  - `USABILITY_CAMPUS_ID`
+  - `USABILITY_TERM_ID`
+  - `USABILITY_SUBJECT_ID`
+  - `USABILITY_SCREENSHOT_PATH`
 
-```bash
-npm run test:security-phase1
-npm run test:security-phase2
-npm run test:security-phase3
-npm run test:security-phase4
-npm run test:security-phase5
-npm run test:security-phase6
-npm run test:security-phase7
-npm run test:security-phase8
-```
+## CI Workflows
 
-Each suite prints test descriptions with explicit `PASS`/`FAIL` status and exits non-zero on failure.
+Two GitHub Actions workflows are configured:
+
+- [`security-tests.yml`](.github/workflows/security-tests.yml)
+- [`usability-tests.yml`](.github/workflows/usability-tests.yml)
+
+Both workflows:
+
+- run on `push` to `main`
+- run on `pull_request` targeting `main` or `production`
+- support manual runs via `workflow_dispatch`
+- use `actions/checkout@v6` + `actions/setup-node@v6`
 
 ## API
 
-`GET /api/subjects?campId=1&termId=202601`
+### `GET /api/subjects`
 
-Returns subject options available for the selected campus/term.
+Query params:
 
-`POST /api/parse-url`
+- `campId` (numeric)
+- `termId` (6-digit numeric)
+
+Returns subject options for the selected campus/term.
+
+### `POST /api/parse-url`
 
 Body:
 
 ```json
-{ "url": "https://my.gwu.edu/mod/pws/print.cfm?campId=1&termId=202601&subjId=CSCI" }
+{
+  "url": "https://my.gwu.edu/mod/pws/print.cfm?campId=1&termId=202601&subjId=CSCI"
+}
 ```
 
-Response contains:
+Returns merged/normalized course rows and metadata for calendar rendering.
 
-- `meta`: parsed counts, subject/term labels, source URL
-- `courses`: merged course rows with parsed meetings for calendar rendering
+## Deployment Notes
 
-## Notes
-
-- The backend intentionally fetches GW pages server-side to avoid browser CORS issues.
-- API requests now enforce a strict origin allowlist via `ALLOWED_ORIGINS` and apply security headers via `helmet`.
-- API responses now include an `x-request-id` header; error bodies include `requestId` for traceability.
-- Production 500 responses are intentionally generic (`Internal server error.`) to avoid leaking internals.
-- Subject options are loaded dynamically from GW `subjects.cfm` for the selected `termId` + `campId`.
-- Courses without parseable meeting times (e.g., ARR/TBA) are excluded from results.
+- Designed for single-port deployment targets (for example Firebase App Hosting / Cloud Run style runtime).
+- Production static routing is configured to avoid MIME-type fallback issues for missing assets.
+- HTML responses are served with no-store behavior to reduce stale bundle caching issues across deployments.

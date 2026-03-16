@@ -8,6 +8,8 @@ const DEFAULT_SELECTION = {
   termId: '202603',
   subjectId: 'CSCI',
 };
+const APP_VERSION = 'v0.1';
+const APP_REPO_URL = 'https://github.com/adamaviv/gw-course-timing-studio';
 
 const TERM_OPTIONS = [
   { id: '202602', label: "Summer '26" },
@@ -1905,6 +1907,17 @@ function App() {
           </aside>
         </div>
       ) : null}
+
+      <a
+        className="app-version-badge"
+        href={APP_REPO_URL}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`Open repository for GW Course Studio ${APP_VERSION}`}
+        title="Open repository"
+      >
+        GW Course Studio {APP_VERSION}
+      </a>
     </div>
   );
 }
