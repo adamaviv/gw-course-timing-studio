@@ -116,17 +116,22 @@ Supported settings:
 - `npm start`: start production server (expects `dist/` to exist).
 - `npm test`: run all security test phases (`test:security-phase1` ... `test:security-phase8`).
 - `npm run test:usability`: run Playwright-based usability audit.
-- `node scripts/app-version.mjs`: print the computed UI version from git tags/history.
+- `node scripts/app-version.mjs`: print the computed UI version from git/env context.
 
 ## Versioning
 
 - Base tag format is `v<major>.<minor>` (example: `v0.1`).
-- UI version shown in the bottom-right is computed from git history:
-  - exactly at tag commit: `v0.1`
-  - one commit after tag: `v0.1.1`
-  - two commits after tag: `v0.1.2`
+- UI version shown in the bottom-right is computed as:
+  - `v<major>.<minor>-Build-<shortHash>`
+  - example: `v0.1-Build-b777fff`
+  - when build number is available: `v<major>.<minor>-Build-<shortHash>-N<buildNumber>`
+  - example: `v0.1-Build-b777fff-N123`
+- In shallow CI/build environments (such as some hosted builds), the version script attempts to fetch tags/history automatically before falling back.
 - You can override the base tag selection in CI/local with `APP_VERSION_BASE_TAG`.
+- You can provide hash context with `APP_BUILD_SHA`, `VITE_GIT_SHA`, `GITHUB_SHA`, `COMMIT_SHA`, `SOURCE_VERSION`, or `REVISION_ID`.
+- You can provide build-number context with `APP_BUILD_NUMBER`, `VITE_BUILD_NUMBER`, `FIREBASE_BUILD_NUMBER`, `GITHUB_RUN_NUMBER`, `BUILD_ID`, `GOOGLE_CLOUD_BUILD_ID`, `CLOUD_BUILD_ID`, or `X_FIREBASE_APPHOSTING_BUILD_ID`.
 - You can force an explicit value with `VITE_APP_VERSION`.
+- You can disable auto-fetch behavior with `APP_VERSION_SKIP_GIT_FETCH=1`.
 
 ## Testing
 
@@ -197,3 +202,4 @@ Returns merged/normalized course rows and metadata for calendar rendering.
 - Designed for single-port deployment targets (for example Firebase App Hosting / Cloud Run style runtime).
 - Production static routing is configured to avoid MIME-type fallback issues for missing assets.
 - HTML responses are served with no-store behavior to reduce stale bundle caching issues across deployments.
+- If a deployment platform strips git metadata entirely, set `VITE_APP_VERSION` in build env to guarantee an explicit version string.
