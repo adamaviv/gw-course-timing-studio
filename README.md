@@ -9,6 +9,11 @@ This project was built with AI-assisted development support.
 - Primary assistant: OpenAI Codex
 - Model generation used for assistance in this workspace: GPT-5
 
+## License Disclaimer
+
+This project is licensed under the MIT License. It is provided "as is", without warranty of any kind, express or implied.
+See the full license text in [`LICENSE`](LICENSE).
+
 ## Current Feature Set
 
 - Term/campus/subject selector that builds the GW schedule URL automatically.
@@ -173,6 +178,21 @@ All workflows:
 - support manual runs via `workflow_dispatch`
 - use `actions/checkout@v6` + `actions/setup-node@v6`
 - fetch full git history/tags (`fetch-depth: 0`) so version computation is accurate in CI
+
+## Feature Requests
+
+Feature requests are welcome. Please open an issue at:
+
+- https://github.com/adamaviv/gw-course-timing-studio/issues
+
+When submitting a request, include:
+
+- the problem you are trying to solve
+- the proposed behavior/UX
+- why it is useful for course studio app
+- screenshots/mockups if relevant
+
+Please also check current issues to ensure that your feature request isn't a duplicate.
 
 ## API
 
