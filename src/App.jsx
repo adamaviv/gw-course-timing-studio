@@ -523,6 +523,7 @@ function App() {
   const [printGeneratedAt, setPrintGeneratedAt] = useState('');
   const [printIncludeCalendar, setPrintIncludeCalendar] = useState(true);
   const [printIncludeSelectedList, setPrintIncludeSelectedList] = useState(true);
+  const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
   const normalizedSubjectId = useMemo(() => normalizeSubjectIdValue(subjectId), [subjectId]);
   const scheduleUrl = useMemo(
     () => buildScheduleUrl(campusId, termId, normalizedSubjectId),
@@ -1234,6 +1235,64 @@ function App() {
       });
     });
   }
+
+  function openPdfPreview() {
+    if (typeof window === 'undefined' || !canPrint) {
+      return;
+    }
+    closeCourseDetails();
+    setFocusedDayCode(null);
+    setPrintGeneratedAt(new Date().toISOString());
+    setError('');
+    if (!isPdfPreviewOpen && typeof window.history?.pushState === 'function') {
+      const currentState =
+        window.history.state && typeof window.history.state === 'object' ? window.history.state : {};
+      window.history.pushState(
+        {
+          ...currentState,
+          __gwPdfPreview: true,
+        },
+        '',
+        window.location.href
+      );
+    }
+    setIsPdfPreviewOpen(true);
+
+    window.requestAnimationFrame(() => {
+      preparePrintLayout();
+    });
+  }
+
+  function closePdfPreview() {
+    if (
+      typeof window !== 'undefined' &&
+      typeof window.history?.back === 'function' &&
+      window.history.state &&
+      window.history.state.__gwPdfPreview
+    ) {
+      window.history.back();
+      return;
+    }
+    setIsPdfPreviewOpen(false);
+    cleanupPrintLayout();
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const handlePopState = (event) => {
+      const isPreviewState = Boolean(event.state && event.state.__gwPdfPreview);
+      if (isPdfPreviewOpen && !isPreviewState) {
+        setIsPdfPreviewOpen(false);
+        cleanupPrintLayout();
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [isPdfPreviewOpen]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -2067,15 +2126,26 @@ function App() {
                   <div className="print-controls-panel" aria-label="Print controls">
                     <div className="print-controls-top">
                       <span className="print-controls-title">Print Options</span>
-                      <button
-                        type="button"
-                        className="view-toggle-button print-trigger-button"
-                        onClick={openPrintView}
-                        disabled={!canPrint}
-                        aria-label="Print selected schedule"
-                      >
-                        Print
-                      </button>
+                      <div className="print-controls-buttons">
+                        <button
+                          type="button"
+                          className="view-toggle-button print-preview-button"
+                          onClick={openPdfPreview}
+                          disabled={!canPrint}
+                          aria-label="Open PDF preview"
+                        >
+                          PDF
+                        </button>
+                        <button
+                          type="button"
+                          className="view-toggle-button print-trigger-button"
+                          onClick={openPrintView}
+                          disabled={!canPrint}
+                          aria-label="Print selected schedule"
+                        >
+                          Print
+                        </button>
+                      </div>
                     </div>
                     <div className="print-options-row">
                       <label className="print-option-toggle">
@@ -2192,7 +2262,15 @@ function App() {
       ) : null}
 
       {subjectFrames.length > 0 ? (
-        <section className="print-report" aria-hidden="true">
+        <section className="print-report" aria-hidden={!isPdfPreviewOpen}>
+          {isPdfPreviewOpen ? (
+            <div className="pdf-preview-toolbar" role="region" aria-label="PDF preview controls">
+              <p>PDF preview mode. Use your browser print dialog to Save as PDF.</p>
+              <button type="button" className="view-toggle-button" onClick={closePdfPreview}>
+                Close Preview
+              </button>
+            </div>
+          ) : null}
           <header className="print-report-header">
             <h1>GW Course Studio</h1>
             <p>

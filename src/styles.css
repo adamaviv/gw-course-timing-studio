@@ -643,6 +643,12 @@ button:disabled {
   gap: 0.5rem;
 }
 
+.print-controls-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.34rem;
+}
+
 .print-controls-title {
   font-size: 0.72rem;
   font-weight: 700;
@@ -696,6 +702,23 @@ button:disabled {
   background: #a7b9bf;
   border-color: #99adb4;
   color: #ecf1f3;
+  cursor: not-allowed;
+}
+
+.print-preview-button {
+  background: #eef7fa;
+  color: #0f5063;
+  border-color: #8fb3bf;
+}
+
+.print-preview-button:hover {
+  background: #e1f0f5;
+}
+
+.print-preview-button:disabled {
+  background: #f4f7f8;
+  border-color: #c3d2d7;
+  color: #91a5ad;
   cursor: not-allowed;
 }
 
@@ -929,6 +952,24 @@ button:disabled {
   display: none;
 }
 
+.pdf-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  margin-bottom: 0.7rem;
+  border: 1px solid #bfd2d7;
+  border-radius: 10px;
+  background: #f3fbff;
+  padding: 0.5rem 0.6rem;
+}
+
+.pdf-preview-toolbar p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #1d4a58;
+}
+
 body.print-prep .top-panel,
 body.print-prep .workspace,
 body.print-prep .error-box,
@@ -952,6 +993,12 @@ body.print-prep .print-report {
   margin: 0 !important;
   box-sizing: border-box;
   overflow-x: hidden;
+}
+
+body.print-prep .pdf-preview-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 body.print-prep .print-detail-card.print-force-page-break {
@@ -1330,6 +1377,10 @@ body.print-prep .print-detail-card:last-child {
     margin: 0 !important;
     padding: 0 !important;
     display: block !important;
+  }
+
+  .pdf-preview-toolbar {
+    display: none !important;
   }
 
   .print-report a {
