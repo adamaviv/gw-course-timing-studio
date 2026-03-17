@@ -735,6 +735,22 @@ function App() {
 
     return mapping;
   }, [courses]);
+  const courseById = useMemo(
+    () =>
+      new Map(
+        courses.map((course) => [course.id, course])
+      ),
+    [courses]
+  );
+  const linkedParentIdByChildId = useMemo(() => {
+    const mapping = new Map();
+    for (const [parentId, linkedChildren] of linkedChildrenByParentId.entries()) {
+      for (const child of linkedChildren ?? []) {
+        mapping.set(child.id, parentId);
+      }
+    }
+    return mapping;
+  }, [linkedChildrenByParentId]);
 
   const primaryListCourses = useMemo(
     () =>
@@ -1544,6 +1560,23 @@ function App() {
       (linkedCourse) => isSchedulableCourse(linkedCourse) && selectedIds.has(linkedCourse.id)
     ).length;
     const linkedSelectedCount = linkedCourses.filter((linkedCourse) => selectedIds.has(linkedCourse.id)).length;
+    const linkedParentId = row.isLinked ? linkedParentIdByChildId.get(course.id) : null;
+    const linkedParentCourse = linkedParentId ? courseById.get(linkedParentId) ?? null : null;
+    const linkedParentLabel = linkedParentCourse
+      ? `${linkedParentCourse.courseNumber || 'Primary Section'}${
+          linkedParentCourse.section ? ` Sec ${linkedParentCourse.section}` : ''
+        }`
+      : 'Primary Section';
+    const linkedParentCrnText = linkedParentCourse
+      ? crnSummary(linkedParentCourse)
+      : course.linkedParentCrn
+        ? `CRN ${course.linkedParentCrn}`
+        : '';
+    const linkedTypeLabel = String(course.title || '')
+      .toLowerCase()
+      .includes('(lab)')
+      ? 'Linked Section (Lab)'
+      : 'Linked Section';
 
     return (
       <label
@@ -1577,6 +1610,12 @@ function App() {
             <span className="course-code">{course.courseNumber}</span>
             {course.section ? <span className="course-section">Sec {course.section}</span> : null}
           </div>
+          {row.isLinked ? (
+            <p className="course-linked-note">
+              <strong>{linkedTypeLabel}:</strong> Linked to {linkedParentLabel}
+              {linkedParentCrnText ? ` | ${linkedParentCrnText}` : ''}
+            </p>
+          ) : null}
           <p className="course-name">{course.title}</p>
           <p className="course-meta">
             {course.instructor} | {course.status}
@@ -2213,13 +2252,42 @@ function App() {
                     const instructorEntries = instructorEntriesForCourse(course);
                     const titleEntries = titleEntriesForCourse(course);
                     const courseComments = commentEntriesForCourse(course);
+                    const isLinkedPrintCourse = course.relationType === 'linked';
+                    const linkedParentId = linkedParentIdByChildId.get(course.id);
+                    const linkedParentCourse = linkedParentId ? courseById.get(linkedParentId) ?? null : null;
+                    const linkedParentLabel = linkedParentCourse
+                      ? `${linkedParentCourse.courseNumber || 'Primary Section'}${
+                          linkedParentCourse.section ? ` Sec ${linkedParentCourse.section}` : ''
+                        }`
+                      : '';
+                    const linkedParentCrnText = linkedParentCourse
+                      ? crnSummary(linkedParentCourse)
+                      : course.linkedParentCrn
+                        ? `CRN ${course.linkedParentCrn}`
+                        : '';
+                    const linkedTypeLabel = String(course.title || '')
+                      .toLowerCase()
+                      .includes('(lab)')
+                      ? 'Linked Section (Lab)'
+                      : 'Linked Section';
                     return (
-                      <article className="print-detail-card" key={`print-detail-${course.id}`} data-course-id={course.id}>
+                      <article
+                        className={`print-detail-card ${isLinkedPrintCourse ? 'print-detail-card-linked' : ''}`}
+                        key={`print-detail-${course.id}`}
+                        data-course-id={course.id}
+                      >
                         <h3>
                           {course.courseNumber}
                           {course.section ? ` | Section ${course.section}` : ''}
                         </h3>
                         <p className="print-detail-title">{course.title}</p>
+                        {isLinkedPrintCourse ? (
+                          <p className="print-linked-note">
+                            <strong>{linkedTypeLabel}:</strong>{' '}
+                            {linkedParentLabel ? `Linked to ${linkedParentLabel}` : 'Linked to primary section'}
+                            {linkedParentCrnText ? ` | ${linkedParentCrnText}` : ''}
+                          </p>
+                        ) : null}
                         <p>
                           <strong>Status:</strong> {course.status} | <strong>{crnSummary(course)}</strong> |{' '}
                           <strong>Credits:</strong> {course.credits || 'N/A'}
