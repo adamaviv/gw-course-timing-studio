@@ -2132,9 +2132,9 @@ function App() {
                           className="view-toggle-button print-preview-button"
                           onClick={openPdfPreview}
                           disabled={!canPrint}
-                          aria-label="Open PDF preview"
+                          aria-label="Open print preview"
                         >
-                          PDF
+                          Preview
                         </button>
                         <button
                           type="button"
