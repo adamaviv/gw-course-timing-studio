@@ -593,9 +593,86 @@ button:disabled {
   gap: 0.7rem;
 }
 
+.calendar-header-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.print-controls-panel {
+  border: 1px solid #b8d0d6;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f6fbff, #e9f4f8);
+  padding: 0.38rem 0.45rem 0.42rem;
+  display: grid;
+  gap: 0.32rem;
+  min-width: 230px;
+}
+
+.print-controls-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.print-controls-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #235060;
+}
+
+.print-options-row {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.print-option-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: #20434f;
+  border: 1px solid #b4cad0;
+  border-radius: 999px;
+  background: #fff;
+  padding: 0.18rem 0.45rem;
+  cursor: pointer;
+}
+
+.print-option-toggle input {
+  margin: 0;
+  accent-color: #0f5063;
+}
+
 .view-toggle-button {
   font-size: 0.78rem;
   padding: 0.32rem 0.58rem;
+}
+
+.print-trigger-button {
+  background: #0f5063;
+  color: #fff;
+  border-color: #0d4555;
+}
+
+.print-trigger-button:hover {
+  background: #0b4250;
+}
+
+.print-trigger-button:disabled {
+  background: #a7b9bf;
+  border-color: #99adb4;
+  color: #ecf1f3;
+  cursor: not-allowed;
 }
 
 .course-detail-box {
@@ -824,6 +901,248 @@ button:disabled {
   transform: scale(1.01);
 }
 
+.print-report {
+  display: none;
+}
+
+body.print-prep .top-panel,
+body.print-prep .workspace,
+body.print-prep .error-box,
+body.print-prep .course-detail-overlay,
+body.print-prep .app-version-badge {
+  display: none !important;
+}
+
+body.print-prep .app-shell {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: block !important;
+}
+
+body.print-prep .print-report {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+body.print-prep .print-detail-card.print-force-page-break {
+  break-before: page;
+  page-break-before: always;
+}
+
+body.print-prep {
+  margin: 0;
+  color: #000;
+  background: #fff;
+  font-size: 10pt;
+}
+
+body.print-prep .print-day-column,
+body.print-prep .print-detail-card {
+  break-inside: avoid;
+  page-break-inside: avoid;
+  box-shadow: none;
+  border-color: #7d8890;
+  background: #fff;
+}
+
+body.print-prep .print-details-section h2 {
+  break-after: avoid-page;
+  page-break-after: avoid;
+}
+
+body.print-prep .print-detail-list {
+  display: block !important;
+  width: 100%;
+}
+
+body.print-prep .print-detail-card {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 0.08in;
+  overflow: visible !important;
+  break-inside: avoid !important;
+  page-break-after: auto;
+  page-break-inside: avoid !important;
+  -webkit-column-break-inside: avoid !important;
+  -webkit-region-break-inside: avoid !important;
+  break-before: auto !important;
+  page-break-before: auto !important;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+body.print-prep .print-detail-card * {
+  break-inside: avoid;
+  page-break-inside: avoid;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+body.print-prep.print-engine-safari .print-detail-list {
+  overflow: hidden;
+}
+
+body.print-prep.print-engine-safari .print-detail-card {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  margin-right: 0 !important;
+  margin-left: 0 !important;
+  overflow: hidden !important;
+}
+
+body.print-prep.print-engine-safari .print-detail-card p,
+body.print-prep.print-engine-safari .print-detail-card li,
+body.print-prep.print-engine-safari .print-detail-card a,
+body.print-prep.print-engine-safari .print-detail-card strong {
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  max-width: 100% !important;
+}
+
+body.print-prep .print-detail-card:last-child {
+  margin-bottom: 0;
+}
+
+.print-report-header h1 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.print-report-header p {
+  margin: 0.2rem 0 0;
+}
+
+.print-calendar-section,
+.print-details-section {
+  margin-top: 1rem;
+}
+
+.print-calendar-section h2,
+.print-details-section h2 {
+  margin: 0 0 0.55rem;
+  font-size: 1rem;
+}
+
+.print-calendar-grid {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.print-day-column {
+  border: 1px solid #d0dddc;
+  border-radius: 10px;
+  padding: 0.42rem;
+  background: #ffffff;
+}
+
+.print-day-column h3 {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.print-day-events {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.36rem;
+}
+
+.print-day-event {
+  border: 1px solid #d5e4e7;
+  border-left: 5px solid #476674;
+  border-radius: 8px;
+  padding: 0.3rem 0.38rem;
+  background: #f9fcff;
+}
+
+.print-day-event-time,
+.print-day-event-course,
+.print-day-event-meta {
+  margin: 0;
+  font-size: 0.76rem;
+}
+
+.print-day-event-time {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 600;
+}
+
+.print-day-event-course {
+  margin-top: 0.12rem;
+  font-weight: 600;
+}
+
+.print-day-event-meta {
+  margin-top: 0.1rem;
+  color: #3d5663;
+}
+
+.print-day-empty {
+  border: 1px dashed #cad7da;
+  border-radius: 8px;
+  padding: 0.35rem 0.4rem;
+  color: #54656e;
+  font-size: 0.74rem;
+}
+
+.print-detail-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.print-detail-card {
+  border: 1px solid #cedadc;
+  border-radius: 12px;
+  padding: 0.5rem 0.6rem;
+  background: #ffffff;
+}
+
+.print-detail-card h3 {
+  margin: 0;
+  font-size: 0.94rem;
+}
+
+.print-detail-title {
+  margin: 0.18rem 0 0.28rem;
+  font-weight: 700;
+}
+
+.print-detail-card p {
+  margin: 0.13rem 0;
+  font-size: 0.8rem;
+}
+
+.print-detail-card div {
+  margin-top: 0.25rem;
+}
+
+.print-detail-card ul {
+  margin: 0.2rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.print-detail-card li {
+  margin-bottom: 0.18rem;
+  font-size: 0.79rem;
+}
+
+.print-detail-link a {
+  color: #0b3f4c;
+}
+
 .app-version-badge {
   position: fixed;
   right: 14px;
@@ -846,6 +1165,104 @@ button:disabled {
   background: #ffffff;
   border-color: #98b2af;
   color: #25414a;
+}
+
+@media print {
+  @page {
+    size: letter portrait;
+    margin: 0.5in;
+  }
+
+  body {
+    margin: 0;
+    color: #000;
+    background: #fff;
+    font-size: 10pt;
+  }
+
+  .top-panel,
+  .workspace,
+  .error-box,
+  .course-detail-overlay,
+  .app-version-badge {
+    display: none !important;
+  }
+
+  .print-report {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+
+  .app-shell {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  .print-report a {
+    color: #000;
+    text-decoration: underline;
+  }
+
+  .print-day-column,
+  .print-detail-card {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    box-shadow: none;
+    border-color: #7d8890;
+    background: #fff;
+  }
+
+  .print-details-section h2 {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  .print-detail-list {
+    display: block !important;
+    width: 100%;
+  }
+
+  .print-detail-card {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 0.08in;
+    overflow: visible !important;
+    break-inside: avoid !important;
+    page-break-after: auto;
+    page-break-inside: avoid !important;
+    -webkit-column-break-inside: avoid !important;
+    -webkit-region-break-inside: avoid !important;
+    break-before: auto !important;
+    page-break-before: auto !important;
+    border-radius: 10px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .print-detail-card * {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .print-detail-card.print-force-page-break {
+    break-before: page !important;
+    page-break-before: always !important;
+  }
+
+  .print-detail-card:last-child {
+    margin-bottom: 0;
+  }
 }
 
 @media (max-width: 1100px) {

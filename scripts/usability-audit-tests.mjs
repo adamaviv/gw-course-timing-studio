@@ -219,6 +219,58 @@ const STEPS = [
     },
   },
   {
+    description: 'Print button enables after selection and invokes browser print',
+    run: async ({ page }) => {
+      const printCalendarToggle = page.getByLabel('Include calendar in print');
+      const printListToggle = page.getByLabel('Include selected course list in print');
+      await printCalendarToggle.waitFor({ timeout: 10000 });
+      await printListToggle.waitFor({ timeout: 10000 });
+
+      const printButton = page.getByRole('button', { name: 'Print' });
+      await printButton.waitFor({ timeout: 10000 });
+      assert(!(await printButton.isDisabled()), 'Expected Print button to be enabled after selecting a class.');
+
+      await printButton.click();
+      const printCallCount = await page.evaluate(() => window.__gwPrintCallCount || 0);
+      assert(printCallCount > 0, `Expected window.print to be called, got ${printCallCount}.`);
+
+      await printListToggle.uncheck();
+      await page.emulateMedia({ media: 'print' });
+      assert(await page.locator('.print-calendar-section').isVisible(), 'Expected calendar print section when Calendar toggle is enabled.');
+      assert(!(await page.locator('.print-details-section').isVisible()), 'Expected details print section hidden when Selected Course List toggle is disabled.');
+      await page.emulateMedia({ media: 'screen' });
+
+      await printListToggle.check();
+      await printCalendarToggle.uncheck();
+      await page.emulateMedia({ media: 'print' });
+      assert(!(await page.locator('.print-calendar-section').isVisible()), 'Expected calendar print section hidden when Calendar toggle is disabled.');
+      assert(await page.locator('.print-details-section').isVisible(), 'Expected details print section when Selected Course List toggle is enabled.');
+      await page.emulateMedia({ media: 'screen' });
+
+      await printCalendarToggle.check();
+
+      await printListToggle.uncheck();
+      await printCalendarToggle.uncheck();
+      assert(await printButton.isDisabled(), 'Expected Print button disabled when all print sections are disabled.');
+      await printListToggle.check();
+      assert(!(await printButton.isDisabled()), 'Expected Print button re-enabled when one print section is selected.');
+    },
+  },
+  {
+    description: 'Print media renders report and hides interactive workspace',
+    run: async ({ page }) => {
+      await page.emulateMedia({ media: 'print' });
+      await page.locator('.print-report').waitFor({ timeout: 10000 });
+      assert(await page.locator('.print-report').isVisible(), 'Expected print report to be visible in print media.');
+      assert(!(await page.locator('.workspace').isVisible()), 'Expected interactive workspace to be hidden in print media.');
+
+      const printDetailCount = await page.locator('.print-detail-card').count();
+      assert(printDetailCount > 0, 'Expected print report to include selected course detail cards.');
+
+      await page.emulateMedia({ media: 'screen' });
+    },
+  },
+  {
     description: 'Calendar event opens and closes details modal',
     run: async ({ page }) => {
       await page.locator('.event').first().click();
@@ -265,6 +317,12 @@ async function run() {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     page = await context.newPage();
     page.baseUrl = baseUrl;
+    await page.addInitScript(() => {
+      window.__gwPrintCallCount = 0;
+      window.print = () => {
+        window.__gwPrintCallCount = (window.__gwPrintCallCount || 0) + 1;
+      };
+    });
 
     const consoleErrors = [];
     page.on('console', (msg) => {

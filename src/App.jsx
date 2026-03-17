@@ -44,6 +44,13 @@ const DAYS = [
 ];
 const RECENT_SUBJECTS_STORAGE_KEY = 'gw-course-studio-recent-subjects-v1';
 const MAX_RECENT_SUBJECTS = 12;
+const PRINT_PAGE_HEIGHT_IN = 11;
+const PRINT_PAGE_MARGIN_TOP_IN = 0.5;
+const PRINT_PAGE_MARGIN_BOTTOM_IN = 0.5;
+const PRINT_CONTENT_HEIGHT_IN = PRINT_PAGE_HEIGHT_IN - PRINT_PAGE_MARGIN_TOP_IN - PRINT_PAGE_MARGIN_BOTTOM_IN;
+const PRINT_BREAK_SAFETY_IN = 0.2;
+const PRINT_BREAK_SAFETY_FIREFOX_IN = 0.5;
+const PRINT_BREAK_SAFETY_SAFARI_IN = 0.35;
 
 function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -140,6 +147,54 @@ function minuteLabel(totalMinutes) {
   const period = hour24 >= 12 ? 'PM' : 'AM';
   const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
   return `${hour12}:${String(minute).padStart(2, '0')} ${period}`;
+}
+
+function formatPrintTimestamp(timestampText) {
+  if (!timestampText) {
+    return '';
+  }
+  const parsedDate = new Date(timestampText);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return '';
+  }
+  return parsedDate.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function cssLengthToPixels(lengthText) {
+  if (typeof document === 'undefined' || !document.body) {
+    return 0;
+  }
+
+  const probe = document.createElement('div');
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  probe.style.pointerEvents = 'none';
+  probe.style.height = lengthText;
+  probe.style.width = lengthText;
+  probe.style.padding = '0';
+  probe.style.border = '0';
+  probe.style.margin = '0';
+  document.body.appendChild(probe);
+  const measured = probe.getBoundingClientRect().height;
+  probe.remove();
+  return measured;
+}
+
+function getPrintEngineFlags() {
+  if (typeof navigator === 'undefined') {
+    return { isFirefox: false, isSafari: false };
+  }
+
+  const ua = String(navigator.userAgent || '').toLowerCase();
+  const isFirefox = /firefox|fxios/.test(ua);
+  const isSafari = /safari/.test(ua) && !/chrome|chromium|crios|edg|opr|fxios/.test(ua);
+  return { isFirefox, isSafari };
 }
 
 function baseCourseKey(course) {
@@ -465,6 +520,9 @@ function App() {
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [detailPosition, setDetailPosition] = useState(null);
   const [focusedDayCode, setFocusedDayCode] = useState(null);
+  const [printGeneratedAt, setPrintGeneratedAt] = useState('');
+  const [printIncludeCalendar, setPrintIncludeCalendar] = useState(true);
+  const [printIncludeSelectedList, setPrintIncludeSelectedList] = useState(true);
   const normalizedSubjectId = useMemo(() => normalizeSubjectIdValue(subjectId), [subjectId]);
   const scheduleUrl = useMemo(
     () => buildScheduleUrl(campusId, termId, normalizedSubjectId),
@@ -791,6 +849,71 @@ function App() {
     () => (effectiveFocusedDayCode ? visibleDays.filter((day) => day.code === effectiveFocusedDayCode) : visibleDays),
     [effectiveFocusedDayCode, visibleDays]
   );
+  const printCourses = useMemo(() => {
+    const sortedCourses = [...selectedCourses];
+    sortedCourses.sort((a, b) => {
+      const aPrimaryCrn = registrationDetailsForCourse(a)
+        .flatMap((detail) => detail.crns ?? [])
+        .map((value) => String(value || '').trim())
+        .find(Boolean);
+      const bPrimaryCrn = registrationDetailsForCourse(b)
+        .flatMap((detail) => detail.crns ?? [])
+        .map((value) => String(value || '').trim())
+        .find(Boolean);
+
+      return (
+        String(a.frameSubjectLabel || '').localeCompare(String(b.frameSubjectLabel || '')) ||
+        String(a.frameCampusLabel || '').localeCompare(String(b.frameCampusLabel || '')) ||
+        String(a.courseNumber || '').localeCompare(String(b.courseNumber || '')) ||
+        String(a.section || '').localeCompare(String(b.section || '')) ||
+        String(aPrimaryCrn || '').localeCompare(String(bPrimaryCrn || '')) ||
+        String(a.title || '').localeCompare(String(b.title || ''))
+      );
+    });
+    return sortedCourses;
+  }, [selectedCourses]);
+  const printTimestampLabel = useMemo(
+    () => formatPrintTimestamp(printGeneratedAt || new Date().toISOString()),
+    [printGeneratedAt]
+  );
+  const canPrint = printCourses.length > 0 && (printIncludeCalendar || printIncludeSelectedList);
+  function courseCampusLabel(course) {
+    return (
+      String(course?.frameCampusLabel || '').trim() ||
+      campusLabelForCampusId(String(course?.frameCampusId || '').trim())
+    );
+  }
+  const printEventsByDay = useMemo(() => {
+    const eventsByDay = Object.fromEntries(visibleDays.map((day) => [day.code, []]));
+    for (const course of printCourses) {
+      for (const meeting of course.meetings ?? []) {
+        if (!eventsByDay[meeting.day]) {
+          continue;
+        }
+        eventsByDay[meeting.day].push({
+          key: `${course.id}-${meeting.day}-${meeting.startMin}-${meeting.endMin}`,
+          courseNumber: course.courseNumber,
+          title: course.title,
+          startMin: meeting.startMin,
+          endMin: meeting.endMin,
+          startLabel: meeting.startLabel,
+          endLabel: meeting.endLabel,
+          campusLabel: courseCampusLabel(course),
+          instructor: course.instructor || 'TBA',
+          color: colorForCourse(course),
+        });
+      }
+    }
+    for (const dayCode of Object.keys(eventsByDay)) {
+      eventsByDay[dayCode].sort(
+        (a, b) =>
+          a.startMin - b.startMin ||
+          a.endMin - b.endMin ||
+          String(a.courseNumber || '').localeCompare(String(b.courseNumber || ''))
+      );
+    }
+    return eventsByDay;
+  }, [printCourses, visibleDays]);
   const activeCourse = useMemo(
     () => courses.find((course) => course.id === activeCourseId) ?? null,
     [courses, activeCourseId]
@@ -800,10 +923,7 @@ function App() {
     [activeCourse, selectedIds]
   );
   const activeCourseDetailUrl = activeCourse ? sanitizeDetailUrl(activeCourse.detailUrl) : '';
-  const activeCourseCampusLabel = activeCourse
-    ? String(activeCourse.frameCampusLabel || '').trim() ||
-      campusLabelForCampusId(String(activeCourse.frameCampusId || '').trim())
-    : '';
+  const activeCourseCampusLabel = activeCourse ? courseCampusLabel(activeCourse) : '';
 
   const calendar = useMemo(
     () => buildCalendar(selectedCourses, activeCourseId),
@@ -820,6 +940,104 @@ function App() {
 
   const pxPerMin = 1.15;
   const bodyHeight = Math.max(520, (calendar.endMin - calendar.startMin) * pxPerMin);
+
+  function clearDynamicPrintBreaks() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    document.querySelectorAll('.print-detail-card.print-force-page-break').forEach((card) => {
+      card.classList.remove('print-force-page-break');
+    });
+  }
+
+  function applyDynamicPrintBreaks() {
+    if (typeof document === 'undefined' || !printIncludeSelectedList) {
+      return;
+    }
+
+    const report = document.querySelector('.print-report');
+    if (!report) {
+      return;
+    }
+
+    const cards = [...document.querySelectorAll('.print-detail-card[data-course-id]')];
+    if (cards.length < 2) {
+      return;
+    }
+
+    const pageHeightPx = Math.max(1, cssLengthToPixels(`${PRINT_CONTENT_HEIGHT_IN}in`) || 960);
+    const { isFirefox, isSafari } = getPrintEngineFlags();
+    const safetyInches = isFirefox
+      ? PRINT_BREAK_SAFETY_FIREFOX_IN
+      : isSafari
+        ? PRINT_BREAK_SAFETY_SAFARI_IN
+        : PRINT_BREAK_SAFETY_IN;
+    const breakSafetyPx = Math.max(0, cssLengthToPixels(`${safetyInches}in`) || 0);
+    const reportTop = report.getBoundingClientRect().top;
+    let verticalShift = 0;
+    const breakIds = new Set();
+
+    for (let index = 0; index < cards.length; index += 1) {
+      const card = cards[index];
+      const courseId = String(card.getAttribute('data-course-id') || '').trim();
+      if (!courseId) {
+        continue;
+      }
+
+      const rect = card.getBoundingClientRect();
+      const computedStyle = window.getComputedStyle(card);
+      const marginTop = Number.parseFloat(computedStyle.marginTop || '0') || 0;
+      const marginBottom = Number.parseFloat(computedStyle.marginBottom || '0') || 0;
+      const naturalTop = rect.top - reportTop;
+      const adjustedTop = naturalTop + verticalShift;
+      const cardHeight = rect.height + marginTop + marginBottom;
+
+      if (cardHeight <= 0 || cardHeight >= pageHeightPx) {
+        continue;
+      }
+
+      const currentPageStart = Math.floor(Math.max(0, adjustedTop) / pageHeightPx) * pageHeightPx;
+      const currentPageEnd = currentPageStart + pageHeightPx;
+      const adjustedBottom = adjustedTop + cardHeight;
+      const crossesPageEdge = adjustedBottom > currentPageEnd - breakSafetyPx;
+      if (!crossesPageEdge) {
+        continue;
+      }
+
+      breakIds.add(courseId);
+      verticalShift += currentPageEnd - adjustedTop;
+    }
+
+    clearDynamicPrintBreaks();
+    for (const card of cards) {
+      const courseId = String(card.getAttribute('data-course-id') || '').trim();
+      if (courseId && breakIds.has(courseId)) {
+        card.classList.add('print-force-page-break');
+      }
+    }
+  }
+
+  function preparePrintLayout() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    const { isFirefox, isSafari } = getPrintEngineFlags();
+    document.body.classList.add('print-prep');
+    document.body.classList.toggle('print-engine-firefox', isFirefox);
+    document.body.classList.toggle('print-engine-safari', isSafari);
+    clearDynamicPrintBreaks();
+    applyDynamicPrintBreaks();
+  }
+
+  function cleanupPrintLayout() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    document.body.classList.remove('print-prep');
+    document.body.classList.remove('print-engine-firefox');
+    document.body.classList.remove('print-engine-safari');
+    clearDynamicPrintBreaks();
+  }
 
   function calculateDetailPosition(anchorRect) {
     if (!anchorRect || typeof window === 'undefined') {
@@ -981,6 +1199,75 @@ function App() {
       window.location.reload();
     }
   }
+
+  function openPrintView() {
+    if (typeof window === 'undefined' || !canPrint) {
+      return;
+    }
+    closeCourseDetails();
+    setFocusedDayCode(null);
+    setPrintGeneratedAt(new Date().toISOString());
+    window.requestAnimationFrame(() => {
+      preparePrintLayout();
+      window.requestAnimationFrame(() => {
+        const usesPrintStubCounter = typeof window.__gwPrintCallCount === 'number';
+        window.print();
+        if (usesPrintStubCounter) {
+          cleanupPrintLayout();
+        }
+      });
+    });
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const handleBeforePrint = () => {
+      if (canPrint) {
+        preparePrintLayout();
+      }
+    };
+    const handleAfterPrint = () => {
+      cleanupPrintLayout();
+    };
+
+    window.addEventListener('beforeprint', handleBeforePrint);
+    window.addEventListener('afterprint', handleAfterPrint);
+
+    const printMediaQuery = typeof window.matchMedia === 'function' ? window.matchMedia('print') : null;
+    const handleMediaChange = (event) => {
+      if (event.matches) {
+        if (canPrint) {
+          preparePrintLayout();
+        }
+        return;
+      }
+      cleanupPrintLayout();
+    };
+
+    if (printMediaQuery) {
+      if (typeof printMediaQuery.addEventListener === 'function') {
+        printMediaQuery.addEventListener('change', handleMediaChange);
+      } else if (typeof printMediaQuery.addListener === 'function') {
+        printMediaQuery.addListener(handleMediaChange);
+      }
+    }
+
+    return () => {
+      window.removeEventListener('beforeprint', handleBeforePrint);
+      window.removeEventListener('afterprint', handleAfterPrint);
+      if (printMediaQuery) {
+        if (typeof printMediaQuery.removeEventListener === 'function') {
+          printMediaQuery.removeEventListener('change', handleMediaChange);
+        } else if (typeof printMediaQuery.removeListener === 'function') {
+          printMediaQuery.removeListener(handleMediaChange);
+        }
+      }
+      cleanupPrintLayout();
+    };
+  }, [canPrint, printCourses.length, printIncludeSelectedList]);
 
   async function loadSubjectFrame(targetCampusId, targetTermId, targetSubjectId) {
     const normalizedTargetSubjectId = normalizeSubjectIdValue(targetSubjectId);
@@ -1732,11 +2019,47 @@ function App() {
                     ? `${displayedDays[0]?.label ?? 'Day'} Layout (${selectedCourses.length} selected)`
                     : `Weekly Layout (${selectedCourses.length} selected)`}
                 </h2>
-                {effectiveFocusedDayCode ? (
-                  <button type="button" className="view-toggle-button" onClick={() => setFocusedDayCode(null)}>
-                    Week View
-                  </button>
-                ) : null}
+                <div className="calendar-header-actions">
+                  {effectiveFocusedDayCode ? (
+                    <button type="button" className="view-toggle-button" onClick={() => setFocusedDayCode(null)}>
+                      Week View
+                    </button>
+                  ) : null}
+                  <div className="print-controls-panel" aria-label="Print controls">
+                    <div className="print-controls-top">
+                      <span className="print-controls-title">Print Options</span>
+                      <button
+                        type="button"
+                        className="view-toggle-button print-trigger-button"
+                        onClick={openPrintView}
+                        disabled={!canPrint}
+                        aria-label="Print selected schedule"
+                      >
+                        Print
+                      </button>
+                    </div>
+                    <div className="print-options-row">
+                      <label className="print-option-toggle">
+                        <input
+                          type="checkbox"
+                          checked={printIncludeCalendar}
+                          onChange={(event) => setPrintIncludeCalendar(event.target.checked)}
+                          aria-label="Include calendar in print"
+                        />
+                        Calendar
+                      </label>
+                      <label className="print-option-toggle">
+                        <input
+                          type="checkbox"
+                          checked={printIncludeSelectedList}
+                          onChange={(event) => setPrintIncludeSelectedList(event.target.checked)}
+                          aria-label="Include selected course list in print"
+                        />
+                        Selected Course List
+                      </label>
+                    </div>
+                  </div>
+                </div>
               </div>
               <p>Events outlined in red overlap with at least one selected class. Click an event for details.</p>
             </div>
@@ -1827,6 +2150,147 @@ function App() {
             </div>
           </section>
         </main>
+      ) : null}
+
+      {subjectFrames.length > 0 ? (
+        <section className="print-report" aria-hidden="true">
+          <header className="print-report-header">
+            <h1>GW Course Studio</h1>
+            <p>
+              {selectedTermLabel} | {selectedCampusLabel}
+            </p>
+            <p>Generated: {printTimestampLabel || 'N/A'}</p>
+          </header>
+
+          {printIncludeCalendar ? (
+            <section className="print-calendar-section">
+              <h2>Weekly Layout ({printCourses.length} selected)</h2>
+              {printCourses.length === 0 ? (
+                <p>No schedulable selected classes.</p>
+              ) : (
+                <div
+                  className="print-calendar-grid"
+                  style={{ gridTemplateColumns: `repeat(${Math.max(1, visibleDays.length)}, minmax(0, 1fr))` }}
+                >
+                  {visibleDays.map((day) => (
+                    <article className="print-day-column" key={`print-day-${day.code}`}>
+                      <h3>{day.label}</h3>
+                      <ul className="print-day-events">
+                        {(printEventsByDay[day.code] ?? []).length > 0 ? (
+                          (printEventsByDay[day.code] ?? []).map((event) => (
+                            <li key={event.key} className="print-day-event" style={{ borderLeftColor: event.color }}>
+                              <p className="print-day-event-time">
+                                {event.startLabel} - {event.endLabel}
+                              </p>
+                              <p className="print-day-event-course">
+                                {event.courseNumber} | {event.title}
+                              </p>
+                              <p className="print-day-event-meta">
+                                {event.campusLabel} | {event.instructor}
+                              </p>
+                            </li>
+                          ))
+                        ) : (
+                          <li className="print-day-empty">No classes</li>
+                        )}
+                      </ul>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : null}
+
+          {printIncludeSelectedList ? (
+            <section className="print-details-section">
+              <h2>Selected Class Details</h2>
+              {printCourses.length === 0 ? (
+                <p>No schedulable selected classes.</p>
+              ) : (
+                <div className="print-detail-list">
+                  {printCourses.map((course) => {
+                    const detailLink = sanitizeDetailUrl(course.detailUrl);
+                    const instructorEntries = instructorEntriesForCourse(course);
+                    const titleEntries = titleEntriesForCourse(course);
+                    const courseComments = commentEntriesForCourse(course);
+                    return (
+                      <article className="print-detail-card" key={`print-detail-${course.id}`} data-course-id={course.id}>
+                        <h3>
+                          {course.courseNumber}
+                          {course.section ? ` | Section ${course.section}` : ''}
+                        </h3>
+                        <p className="print-detail-title">{course.title}</p>
+                        <p>
+                          <strong>Status:</strong> {course.status} | <strong>{crnSummary(course)}</strong> |{' '}
+                          <strong>Credits:</strong> {course.credits || 'N/A'}
+                        </p>
+                        <p>
+                          <strong>Instructor:</strong> {course.instructor || 'TBA'}
+                        </p>
+                        <p>
+                          <strong>Campus:</strong> {courseCampusLabel(course) || 'N/A'}
+                        </p>
+                        {new Set(instructorEntries.map((entry) => entry.instructor)).size > 1 ? (
+                          <div>
+                            <strong>Cross-listed Instructors</strong>
+                            <ul>
+                              {instructorEntries.map((entry) => (
+                                <li key={`${course.id}-instructor-${entry.courseNumber}-${entry.instructor}`}>
+                                  <strong>{courseLabelWithCrn(course, entry.courseNumber)}:</strong> {entry.instructor}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        <p>
+                          <strong>Course/Section/CRN:</strong> {listingSummary(course)}
+                        </p>
+                        {new Set(titleEntries.map((entry) => entry.title)).size > 1 ? (
+                          <div>
+                            <strong>Cross-listed Titles</strong>
+                            <ul>
+                              {titleEntries.map((entry) => (
+                                <li key={`${course.id}-title-${entry.courseNumber}-${entry.title}`}>
+                                  <strong>{courseLabelWithCrn(course, entry.courseNumber)}:</strong> {entry.title}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        <p>
+                          <strong>Room:</strong> {course.room || 'N/A'} | <strong>Date Range:</strong>{' '}
+                          {course.dateRange || 'N/A'}
+                        </p>
+                        <p>
+                          <strong>Meeting Pattern:</strong> {summarizeMeetings(course)}
+                        </p>
+                        {courseComments.length > 0 ? (
+                          <div>
+                            <strong>Description / Notes</strong>
+                            <ul>
+                              {courseComments.map((entry) => (
+                                <li key={`${course.id}-comment-${entry.courseNumber}-${entry.text}`}>
+                                  <strong>{courseLabelWithCrn(course, entry.courseNumber)}:</strong> {entry.text}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {detailLink ? (
+                          <p className="print-detail-link">
+                            <a href={detailLink} target="_blank" rel="noreferrer">
+                              Course Catalog Link
+                            </a>
+                          </p>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          ) : null}
+        </section>
       ) : null}
 
       {activeCourse ? (

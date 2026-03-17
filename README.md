@@ -31,6 +31,7 @@ See the full license text in [`LICENSE`](LICENSE).
   - conflict highlighting for overlapping events
   - class color-coding
   - course name, campus, and instructor shown on events
+  - print control for selected schedule
 - Linked-course controls:
   - show/hide linked sections
   - select linked / unselect linked
@@ -47,6 +48,10 @@ See the full license text in [`LICENSE`](LICENSE).
   - anchored near the clicked calendar/list item
   - CRNs, sections, instructors, notes/comments, title variants, and campus
   - action to unselect from modal when opened from a selected event
+- Printable schedule view:
+  - print toggles for `Calendar` and `Selected Course List` (either or both)
+  - prints selected weekly calendar first (when enabled)
+  - then prints expanded selected-class details (modal-level information, when enabled)
 - Recent subjects (local storage):
   - quick re-load
   - pin/unpin
@@ -55,6 +60,8 @@ See the full license text in [`LICENSE`](LICENSE).
 - Storage recovery UX:
   - clear local storage button when saved data is corrupted/out-of-sync
   - reload guidance + fallback recovery UI
+
+Print usage: select classes in the list, set `Calendar`/`Selected Course List` print toggles, then click `Print`.
 
 ## Parsing and Merge Behavior
 
@@ -149,7 +156,7 @@ Supported settings:
 ### Usability Suite
 
 - Command: `npm run test:usability`
-- Uses Playwright to verify key UX flows, including storage-recovery behavior.
+- Uses Playwright to verify key UX flows, including storage-recovery behavior and print-view behavior.
 - Requires Playwright Chromium:
 
 ```bash
