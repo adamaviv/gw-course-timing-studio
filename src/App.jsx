@@ -461,7 +461,7 @@ function App() {
   const [storageRecoveryNeeded, setStorageRecoveryNeeded] = useState(false);
   const [draggedPinnedKey, setDraggedPinnedKey] = useState(null);
   const [dragOverPinnedKey, setDragOverPinnedKey] = useState(null);
-  const [isSelectedFrameCollapsed, setIsSelectedFrameCollapsed] = useState(false);
+  const [isSelectedFrameCollapsed, setIsSelectedFrameCollapsed] = useState(true);
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [detailPosition, setDetailPosition] = useState(null);
   const [focusedDayCode, setFocusedDayCode] = useState(null);
@@ -615,7 +615,7 @@ function App() {
     setSelectedIds(new Set());
     setExpandedLinkedParentIds(new Set());
     setCollapsedFrameKeys(new Set());
-    setIsSelectedFrameCollapsed(false);
+    setIsSelectedFrameCollapsed(true);
     closeCourseDetails();
     setError('');
   }, [subjectFrames, termId]);
@@ -994,7 +994,7 @@ function App() {
       setSelectedIds(new Set());
       setExpandedLinkedParentIds(new Set());
       setCollapsedFrameKeys(new Set());
-      setIsSelectedFrameCollapsed(false);
+      setIsSelectedFrameCollapsed(true);
       closeCourseDetails();
     }
 
@@ -1032,7 +1032,7 @@ function App() {
     });
     setCollapsedFrameKeys((prev) => {
       const next = new Set(prev);
-      next.add(frameKey);
+      next.delete(frameKey);
       return next;
     });
     recordRecentSubject({
@@ -1594,7 +1594,7 @@ function App() {
               </div>
             </div>
 
-            <p className="hint">Double-Click to expand and collapse subjects</p>
+            <p className="hint">Double-click a frame header area or single-click the +/- button to expand or collapse.</p>
 
             <div className="subject-frames">
               <section
@@ -1602,7 +1602,19 @@ function App() {
                 onDoubleClick={handleSelectedFrameDoubleClick}
               >
                 <div className="subject-frame-header">
-                  <h3>Selected</h3>
+                  <div className="subject-frame-title-wrap">
+                    <h3>Selected</h3>
+                    <button
+                      type="button"
+                      className={`frame-state-indicator ${isSelectedFrameCollapsed ? 'is-collapsed' : 'is-expanded'}`}
+                      aria-label={isSelectedFrameCollapsed ? 'Expand selected frame' : 'Collapse selected frame'}
+                      aria-expanded={!isSelectedFrameCollapsed}
+                      title={isSelectedFrameCollapsed ? 'Collapsed' : 'Expanded'}
+                      onClick={() => setIsSelectedFrameCollapsed((prev) => !prev)}
+                    >
+                      {isSelectedFrameCollapsed ? '+' : '-'}
+                    </button>
+                  </div>
                   <div className="subject-frame-actions">
                     <span className="subject-frame-count">{selectedFrameRows.length} selected</span>
                     <button
@@ -1644,7 +1656,19 @@ function App() {
                   onDoubleClick={(event) => handleFrameDoubleClick(event, frame.key)}
                 >
                   <div className="subject-frame-header">
-                    <h3>{frame.subjectLabel}</h3>
+                    <div className="subject-frame-title-wrap">
+                      <h3>{frame.subjectLabel}</h3>
+                      <button
+                        type="button"
+                        className={`frame-state-indicator ${frame.collapsed ? 'is-collapsed' : 'is-expanded'}`}
+                        aria-label={frame.collapsed ? `Expand ${frame.subjectLabel} frame` : `Collapse ${frame.subjectLabel} frame`}
+                        aria-expanded={!frame.collapsed}
+                        title={frame.collapsed ? 'Collapsed' : 'Expanded'}
+                        onClick={() => toggleFrameCollapsed(frame.key)}
+                      >
+                        {frame.collapsed ? '+' : '-'}
+                      </button>
+                    </div>
                     <div className="subject-frame-actions">
                       <button
                         type="button"
