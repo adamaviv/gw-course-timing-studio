@@ -966,13 +966,26 @@ body.print-prep {
   font-size: 10pt;
 }
 
-body.print-prep .print-day-column,
 body.print-prep .print-detail-card {
   break-inside: avoid;
   page-break-inside: avoid;
   box-shadow: none;
   border-color: #7d8890;
   background: #fff;
+}
+
+body.print-prep .print-day-column {
+  box-shadow: none;
+  border-color: #7d8890;
+  background: #fff;
+}
+
+body.print-prep .print-calendar-table thead {
+  display: table-header-group;
+}
+
+body.print-prep .print-calendar-table tfoot {
+  display: table-footer-group;
 }
 
 body.print-prep .print-detail-card-linked {
@@ -1007,6 +1020,11 @@ body.print-prep .print-detail-card-linked::before {
 body.print-prep .print-details-section h2 {
   break-after: avoid-page;
   page-break-after: avoid;
+}
+
+body.print-prep .print-details-section-new-page {
+  break-before: page;
+  page-break-before: always;
 }
 
 body.print-prep .print-detail-list {
@@ -1093,16 +1111,38 @@ body.print-prep .print-detail-card:last-child {
   gap: 0.45rem;
 }
 
+.print-calendar-table-wrap {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+.print-calendar-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0.35rem 0;
+}
+
+.print-calendar-table thead th {
+  padding: 0 0.2rem 0.3rem;
+  text-align: left;
+  font-size: 0.86rem;
+  color: #1d3c44;
+  font-weight: 700;
+  border-bottom: 1px solid #c2d5d9;
+  background: #fff;
+}
+
+.print-calendar-table tbody tr {
+  vertical-align: top;
+}
+
 .print-day-column {
   border: 1px solid #d0dddc;
   border-radius: 10px;
   padding: 0.42rem;
   background: #ffffff;
-}
-
-.print-day-column h3 {
-  margin: 0;
-  font-size: 0.86rem;
+  vertical-align: top;
 }
 
 .print-day-events {
@@ -1297,13 +1337,31 @@ body.print-prep .print-detail-card:last-child {
     text-decoration: underline;
   }
 
-  .print-day-column,
   .print-detail-card {
     break-inside: avoid;
     page-break-inside: avoid;
     box-shadow: none;
     border-color: #7d8890;
     background: #fff;
+  }
+
+  .print-day-column {
+    box-shadow: none;
+    border-color: #7d8890;
+    background: #fff;
+  }
+
+  .print-calendar-table thead {
+    display: table-header-group;
+  }
+
+  .print-calendar-table tfoot {
+    display: table-footer-group;
+  }
+
+  .print-calendar-table th,
+  .print-calendar-table td {
+    vertical-align: top;
   }
 
   .print-detail-card-linked {
@@ -1338,6 +1396,11 @@ body.print-prep .print-detail-card:last-child {
   .print-details-section h2 {
     break-after: avoid-page;
     page-break-after: avoid;
+  }
+
+  .print-details-section-new-page {
+    break-before: page;
+    page-break-before: always;
   }
 
   .print-detail-list {

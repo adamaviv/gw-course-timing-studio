@@ -2207,41 +2207,52 @@ function App() {
               {printCourses.length === 0 ? (
                 <p>No schedulable selected classes.</p>
               ) : (
-                <div
-                  className="print-calendar-grid"
-                  style={{ gridTemplateColumns: `repeat(${Math.max(1, visibleDays.length)}, minmax(0, 1fr))` }}
-                >
-                  {visibleDays.map((day) => (
-                    <article className="print-day-column" key={`print-day-${day.code}`}>
-                      <h3>{day.label}</h3>
-                      <ul className="print-day-events">
-                        {(printEventsByDay[day.code] ?? []).length > 0 ? (
-                          (printEventsByDay[day.code] ?? []).map((event) => (
-                            <li key={event.key} className="print-day-event" style={{ borderLeftColor: event.color }}>
-                              <p className="print-day-event-time">
-                                {event.startLabel} - {event.endLabel}
-                              </p>
-                              <p className="print-day-event-course">
-                                {event.courseNumber} | {event.title}
-                              </p>
-                              <p className="print-day-event-meta">
-                                {event.campusLabel} | {event.instructor}
-                              </p>
-                            </li>
-                          ))
-                        ) : (
-                          <li className="print-day-empty">No classes</li>
-                        )}
-                      </ul>
-                    </article>
-                  ))}
+                <div className="print-calendar-table-wrap">
+                  <table className="print-calendar-table">
+                    <thead>
+                      <tr>
+                        {visibleDays.map((day) => (
+                          <th key={`print-day-header-${day.code}`}>{day.label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        {visibleDays.map((day) => (
+                          <td className="print-day-column" key={`print-day-${day.code}`}>
+                            <ul className="print-day-events">
+                              {(printEventsByDay[day.code] ?? []).length > 0 ? (
+                                (printEventsByDay[day.code] ?? []).map((event) => (
+                                  <li key={event.key} className="print-day-event" style={{ borderLeftColor: event.color }}>
+                                    <p className="print-day-event-time">
+                                      {event.startLabel} - {event.endLabel}
+                                    </p>
+                                    <p className="print-day-event-course">
+                                      {event.courseNumber} | {event.title}
+                                    </p>
+                                    <p className="print-day-event-meta">
+                                      {event.campusLabel} | {event.instructor}
+                                    </p>
+                                  </li>
+                                ))
+                              ) : (
+                                <li className="print-day-empty">No classes</li>
+                              )}
+                            </ul>
+                          </td>
+                        ))}
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               )}
             </section>
           ) : null}
 
           {printIncludeSelectedList ? (
-            <section className="print-details-section">
+            <section
+              className={`print-details-section ${printIncludeCalendar ? 'print-details-section-new-page' : ''}`}
+            >
               <h2>Selected Class Details</h2>
               {printCourses.length === 0 ? (
                 <p>No schedulable selected classes.</p>
