@@ -188,7 +188,7 @@ export function computeAppVersion() {
     return explicitVersion;
   }
 
-  const baseTag = resolveBaseTag() || 'v0.1';
+  const baseTag = resolveBaseTag() || 'v0.2';
   const buildHash = resolveBuildHash() || 'unknown';
   const buildNumber = resolveBuildNumber();
   const hashVersion = `${baseTag}-Build-${buildHash}`;
