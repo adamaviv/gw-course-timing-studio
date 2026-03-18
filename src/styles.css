@@ -722,6 +722,37 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.share-trigger-button {
+  background: #eef3ff;
+  color: #1e3f7a;
+  border-color: #99abd8;
+}
+
+.share-trigger-button:hover {
+  background: #e2ebff;
+}
+
+.share-trigger-button:disabled {
+  background: #f4f6fa;
+  border-color: #c8d1e2;
+  color: #8b97b1;
+  cursor: not-allowed;
+}
+
+.share-status {
+  margin: 0.14rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
+.share-status-success {
+  color: #1f5d31;
+}
+
+.share-status-error {
+  color: #7a2a24;
+}
+
 .course-detail-box {
   border: 1px solid #cad7d4;
   border-radius: 12px;

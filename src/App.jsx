@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { decompressFromEncodedURIComponent, compressToEncodedURIComponent } from 'lz-string';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 import { getRecoveryReloadHint } from '../shared/recoveryHints.js';
 
@@ -51,6 +52,30 @@ const PRINT_CONTENT_HEIGHT_IN = PRINT_PAGE_HEIGHT_IN - PRINT_PAGE_MARGIN_TOP_IN 
 const PRINT_BREAK_SAFETY_IN = 0.2;
 const PRINT_BREAK_SAFETY_FIREFOX_IN = 0.5;
 const PRINT_BREAK_SAFETY_SAFARI_IN = 0.35;
+const SHARE_QUERY_PARAM_VERSION = 'share_v';
+const SHARE_QUERY_PARAM_TERM = 'share_t';
+const SHARE_QUERY_PARAM_FRAME = 'share_f';
+const SHARE_QUERY_PARAM_SELECTION = 'share_sel';
+const SHARE_QUERY_PARAM_ONLY_SELECTED = 'share_only_sel';
+const SHARE_QUERY_PARAM_SHOW_CANCELLED = 'share_show_cancel';
+const SHARE_QUERY_PARAM_DAY = 'share_day';
+const SHARE_QUERY_PARAM_PREVIEW = 'share_preview';
+const SHARE_QUERY_PARAM_COMPRESSED = 'share_z';
+const SHARE_HASH_PARAM_LEGACY = 'share';
+const SHARE_QUERY_KEYS = [
+  SHARE_QUERY_PARAM_VERSION,
+  SHARE_QUERY_PARAM_TERM,
+  SHARE_QUERY_PARAM_FRAME,
+  SHARE_QUERY_PARAM_SELECTION,
+  SHARE_QUERY_PARAM_ONLY_SELECTED,
+  SHARE_QUERY_PARAM_SHOW_CANCELLED,
+  SHARE_QUERY_PARAM_DAY,
+  SHARE_QUERY_PARAM_PREVIEW,
+  SHARE_QUERY_PARAM_COMPRESSED,
+];
+const SHARE_STATE_VERSION = 1;
+const MAX_SHARE_URL_LENGTH = 6000;
+const SHARE_STATUS_RESET_MS = 5000;
 
 function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -327,6 +352,323 @@ function courseLabelWithCrn(course, courseNumber) {
   return `${courseNumber} (${crnText})`;
 }
 
+function normalizedCrnListForCourse(course) {
+  return [
+    ...new Set(
+      registrationDetailsForCourse(course)
+        .flatMap((detail) => detail.crns ?? [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    ),
+  ].sort();
+}
+
+function normalizedCrnListKey(crns) {
+  return [...new Set((crns ?? []).map((value) => String(value || '').trim()).filter(Boolean))]
+    .sort()
+    .join(',');
+}
+
+function isValidShareTermId(termId) {
+  return /^\d{6}$/.test(String(termId || '').trim());
+}
+
+function isValidShareCampusId(campusId) {
+  const normalized = String(campusId || '').trim();
+  return CAMPUS_OPTIONS.some((entry) => entry.id === normalized);
+}
+
+function isValidShareSubjectId(subjectId) {
+  const normalized = normalizeSubjectIdValue(subjectId);
+  return normalized.length > 0 && normalized === String(subjectId || '').trim().toUpperCase();
+}
+
+function parseAndValidateSharePayload(rawPayload) {
+  if (!rawPayload || typeof rawPayload !== 'object' || Array.isArray(rawPayload)) {
+    return { error: 'Invalid share payload format.' };
+  }
+
+  const version = Number(rawPayload.v);
+  if (version !== SHARE_STATE_VERSION) {
+    return { error: 'Unsupported share payload version.' };
+  }
+
+  const termId = String(rawPayload.t || '').trim();
+  if (!isValidShareTermId(termId)) {
+    return { error: 'Share payload has an invalid term.' };
+  }
+
+  if (!Array.isArray(rawPayload.f) || rawPayload.f.length === 0) {
+    return { error: 'Share payload has no subject frames.' };
+  }
+
+  const frameByKey = new Map();
+  const frames = [];
+  for (const frame of rawPayload.f) {
+    const campusId = String(frame?.c || '').trim();
+    const subjectId = normalizeSubjectIdValue(frame?.s);
+    if (!isValidShareCampusId(campusId) || !isValidShareSubjectId(subjectId)) {
+      return { error: 'Share payload contains an invalid frame.' };
+    }
+    const frameKey = `${termId}|${campusId}|${subjectId}`;
+    if (frameByKey.has(frameKey)) {
+      continue;
+    }
+    const normalizedFrame = { c: campusId, s: subjectId, fk: frameKey };
+    frameByKey.set(frameKey, normalizedFrame);
+    frames.push(normalizedFrame);
+  }
+
+  const validDayCodes = new Set(DAYS.map((entry) => entry.code));
+  const uiInput = rawPayload.ui && typeof rawPayload.ui === 'object' && !Array.isArray(rawPayload.ui) ? rawPayload.ui : {};
+  const rawDay = uiInput.day == null ? null : String(uiInput.day || '').trim().toUpperCase();
+  if (rawDay && !validDayCodes.has(rawDay)) {
+    return { error: 'Share payload has an invalid focused day.' };
+  }
+  const ui = {
+    onlySel: Boolean(uiInput.onlySel),
+    showCancel: Boolean(uiInput.showCancel),
+    day: rawDay || null,
+    preview: Boolean(uiInput.preview),
+  };
+
+  const selInput = Array.isArray(rawPayload.sel) ? rawPayload.sel : [];
+  const selection = [];
+  for (const entry of selInput) {
+    const frameKey = String(entry?.fk || '').trim();
+    if (!frameKey || !frameByKey.has(frameKey)) {
+      return { error: 'Share payload has invalid selected class references.' };
+    }
+    const crns = Array.isArray(entry?.cr)
+      ? entry.cr
+          .map((value) => String(value || '').trim())
+          .filter((value) => /^\d{3,10}$/.test(value))
+      : [];
+    const normalizedCrns = [...new Set(crns)].sort();
+    if (normalizedCrns.length === 0) {
+      return { error: 'Share payload has invalid selected class CRNs.' };
+    }
+    selection.push({
+      fk: frameKey,
+      cr: normalizedCrns,
+      k: `${frameKey}|${normalizedCrnListKey(normalizedCrns)}`,
+    });
+  }
+
+  const dedupedSelection = [];
+  const seenSelectionKeys = new Set();
+  for (const entry of selection) {
+    if (seenSelectionKeys.has(entry.k)) {
+      continue;
+    }
+    seenSelectionKeys.add(entry.k);
+    dedupedSelection.push({ fk: entry.fk, cr: entry.cr });
+  }
+
+  const selectedCrnInput = Array.isArray(rawPayload.sc) ? rawPayload.sc : [];
+  const selectedCrns = [];
+  for (const rawCrn of selectedCrnInput) {
+    const crn = String(rawCrn || '').trim();
+    if (!crn) {
+      continue;
+    }
+    if (!/^\d{3,10}$/.test(crn)) {
+      return { error: 'Share payload has invalid selected class CRNs.' };
+    }
+    selectedCrns.push(crn);
+  }
+  const dedupedSelectedCrns = [...new Set(selectedCrns)].sort();
+
+  return {
+    payload: {
+      v: SHARE_STATE_VERSION,
+      t: termId,
+      f: frames,
+      sel: dedupedSelection,
+      sc: dedupedSelectedCrns,
+      ui,
+    },
+  };
+}
+
+function parseBooleanShareParam(rawValue) {
+  const normalized = String(rawValue || '')
+    .trim()
+    .toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function parseFrameToken(token) {
+  const [campusPart, subjectPart, ...rest] = String(token || '').split(':');
+  if (rest.length > 0) {
+    return null;
+  }
+  const campusId = String(campusPart || '').trim();
+  const subjectId = normalizeSubjectIdValue(subjectPart);
+  if (!isValidShareCampusId(campusId) || !isValidShareSubjectId(subjectId)) {
+    return null;
+  }
+  return { c: campusId, s: subjectId };
+}
+
+function parseCrnListText(rawText) {
+  const tokens = String(rawText || '')
+    .split(',')
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return [];
+  }
+  for (const token of tokens) {
+    if (!/^\d{3,10}$/.test(token)) {
+      return null;
+    }
+  }
+  return [...new Set(tokens)].sort();
+}
+
+function decodeCompressedSharePayload(compressedText) {
+  const compressed = String(compressedText || '').trim();
+  if (!compressed) {
+    return { error: 'Share link data is empty or invalid.' };
+  }
+
+  let decompressed = '';
+  try {
+    decompressed = decompressFromEncodedURIComponent(compressed) || '';
+  } catch {
+    return { error: 'Share link data could not be decoded.' };
+  }
+  if (!decompressed) {
+    return { error: 'Share link data is empty or invalid.' };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(decompressed);
+  } catch {
+    return { error: 'Share link contains invalid JSON data.' };
+  }
+
+  return parseAndValidateSharePayload(parsed);
+}
+
+function parseReadableSharePayload(searchParams) {
+  const hasReadableShareParams =
+    searchParams.has(SHARE_QUERY_PARAM_VERSION) ||
+    searchParams.has(SHARE_QUERY_PARAM_TERM) ||
+    searchParams.has(SHARE_QUERY_PARAM_FRAME) ||
+    searchParams.has(SHARE_QUERY_PARAM_SELECTION) ||
+    searchParams.has(SHARE_QUERY_PARAM_ONLY_SELECTED) ||
+    searchParams.has(SHARE_QUERY_PARAM_SHOW_CANCELLED) ||
+    searchParams.has(SHARE_QUERY_PARAM_DAY) ||
+    searchParams.has(SHARE_QUERY_PARAM_PREVIEW);
+  if (!hasReadableShareParams) {
+    return null;
+  }
+
+  const version = Number(searchParams.get(SHARE_QUERY_PARAM_VERSION));
+  if (version !== SHARE_STATE_VERSION) {
+    return { error: 'Unsupported share payload version.' };
+  }
+
+  const termId = String(searchParams.get(SHARE_QUERY_PARAM_TERM) || '').trim();
+  if (!isValidShareTermId(termId)) {
+    return { error: 'Share payload has an invalid term.' };
+  }
+
+  const frameTokens = searchParams.getAll(SHARE_QUERY_PARAM_FRAME).map((value) => String(value || '').trim()).filter(Boolean);
+  if (frameTokens.length === 0) {
+    return { error: 'Share payload has no subject frames.' };
+  }
+
+  const frames = [];
+  const frameKeySet = new Set();
+  for (const token of frameTokens) {
+    const parsedFrame = parseFrameToken(token);
+    if (!parsedFrame) {
+      return { error: 'Share payload contains an invalid frame.' };
+    }
+    const frameKey = `${termId}|${parsedFrame.c}|${parsedFrame.s}`;
+    if (frameKeySet.has(frameKey)) {
+      continue;
+    }
+    frameKeySet.add(frameKey);
+    frames.push(parsedFrame);
+  }
+
+  const selectionTokens = searchParams
+    .getAll(SHARE_QUERY_PARAM_SELECTION)
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const selection = [];
+  const selectedCrns = [];
+  for (const token of selectionTokens) {
+    if (token.includes('@')) {
+      const [frameToken, crnText] = token.split('@');
+      const parsedFrame = parseFrameToken(frameToken);
+      if (!parsedFrame) {
+        return { error: 'Share payload has invalid selected class references.' };
+      }
+      const frameKey = `${termId}|${parsedFrame.c}|${parsedFrame.s}`;
+      if (!frameKeySet.has(frameKey)) {
+        return { error: 'Share payload has invalid selected class references.' };
+      }
+
+      const normalizedCrns = parseCrnListText(crnText);
+      if (!normalizedCrns || normalizedCrns.length === 0) {
+        return { error: 'Share payload has invalid selected class CRNs.' };
+      }
+      selection.push({ fk: frameKey, cr: normalizedCrns });
+      selectedCrns.push(...normalizedCrns);
+      continue;
+    }
+
+    const normalizedCrns = parseCrnListText(token);
+    if (!normalizedCrns || normalizedCrns.length === 0) {
+      return { error: 'Share payload has invalid selected class CRNs.' };
+    }
+    selectedCrns.push(...normalizedCrns);
+  }
+
+  const dayText = String(searchParams.get(SHARE_QUERY_PARAM_DAY) || '')
+    .trim()
+    .toUpperCase();
+  const ui = {
+    onlySel: parseBooleanShareParam(searchParams.get(SHARE_QUERY_PARAM_ONLY_SELECTED)),
+    showCancel: parseBooleanShareParam(searchParams.get(SHARE_QUERY_PARAM_SHOW_CANCELLED)),
+    day: dayText || null,
+    preview: parseBooleanShareParam(searchParams.get(SHARE_QUERY_PARAM_PREVIEW)),
+  };
+
+  return parseAndValidateSharePayload({
+    v: SHARE_STATE_VERSION,
+    t: termId,
+    f: frames,
+    sel: selection,
+    sc: selectedCrns,
+    ui,
+  });
+}
+
+function decodeSharePayloadFromLocation(searchValue, hashValue) {
+  const searchParams = new URLSearchParams(String(searchValue || '').replace(/^\?/, ''));
+  if (searchParams.has(SHARE_QUERY_PARAM_COMPRESSED)) {
+    return decodeCompressedSharePayload(searchParams.get(SHARE_QUERY_PARAM_COMPRESSED));
+  }
+
+  const readable = parseReadableSharePayload(searchParams);
+  if (readable) {
+    return readable;
+  }
+
+  const hashParams = new URLSearchParams(String(hashValue || '').replace(/^#/, ''));
+  if (!hashParams.has(SHARE_HASH_PARAM_LEGACY)) {
+    return null;
+  }
+  return decodeCompressedSharePayload(hashParams.get(SHARE_HASH_PARAM_LEGACY));
+}
+
 function commentEntriesForCourse(course) {
   if (Array.isArray(course.commentDetails) && course.commentDetails.length > 0) {
     return course.commentDetails
@@ -524,6 +866,11 @@ function App() {
   const [printIncludeCalendar, setPrintIncludeCalendar] = useState(true);
   const [printIncludeSelectedList, setPrintIncludeSelectedList] = useState(true);
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
+  const [shareStatus, setShareStatus] = useState(null);
+  const [pendingShareRestoreSelection, setPendingShareRestoreSelection] = useState(null);
+  const [pendingShareRestorePreview, setPendingShareRestorePreview] = useState(false);
+  const hasProcessedShareLinkRef = useRef(false);
+  const previewManagedByHistoryRef = useRef(false);
   const normalizedSubjectId = useMemo(() => normalizeSubjectIdValue(subjectId), [subjectId]);
   const scheduleUrl = useMemo(
     () => buildScheduleUrl(campusId, termId, normalizedSubjectId),
@@ -617,6 +964,16 @@ function App() {
       setError('Saved browser data could not be updated. Clear local storage to continue.');
     }
   }, [recentSubjects, recentSubjectsLoaded]);
+
+  useEffect(() => {
+    if (!shareStatus) {
+      return undefined;
+    }
+    const timerId = window.setTimeout(() => {
+      setShareStatus(null);
+    }, SHARE_STATUS_RESET_MS);
+    return () => window.clearTimeout(timerId);
+  }, [shareStatus]);
 
   const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
   const recoveryReloadHint = useMemo(() => getRecoveryReloadHint(), []);
@@ -894,6 +1251,7 @@ function App() {
     [printGeneratedAt]
   );
   const canPrint = printCourses.length > 0 && (printIncludeCalendar || printIncludeSelectedList);
+  const canShare = selectedCourses.length > 0;
   function courseCampusLabel(course) {
     return (
       String(course?.frameCampusLabel || '').trim() ||
@@ -1217,6 +1575,180 @@ function App() {
     }
   }
 
+  async function copyTextToClipboard(text) {
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === 'function'
+    ) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+
+    if (typeof document === 'undefined') {
+      return false;
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch {
+      copied = false;
+    }
+    textarea.remove();
+    return copied;
+  }
+
+  function buildSharePayload() {
+    const frames = subjectFrames.map((frame) => ({
+      c: String(frame.campusId || '').trim(),
+      s: normalizeSubjectIdValue(frame.subjectId),
+      fk: String(frame.key || '').trim(),
+    }));
+    if (frames.length === 0) {
+      return { error: 'Load at least one subject before sharing.' };
+    }
+
+    const selectedEntries = [];
+    const selectedEntryKeys = new Set();
+    for (const course of selectedCourses) {
+      const frameKey = String(course.frameKey || '').trim();
+      if (!frameKey) {
+        continue;
+      }
+      const crns = normalizedCrnListForCourse(course);
+      if (crns.length === 0) {
+        continue;
+      }
+      const entryKey = `${frameKey}|${normalizedCrnListKey(crns)}`;
+      if (selectedEntryKeys.has(entryKey)) {
+        continue;
+      }
+      selectedEntryKeys.add(entryKey);
+      selectedEntries.push({ fk: frameKey, cr: crns });
+    }
+
+    if (selectedEntries.length === 0) {
+      return { error: 'Select at least one schedulable class before sharing.' };
+    }
+    const selectedCrns = [...new Set(selectedEntries.flatMap((entry) => entry.cr))].sort();
+    if (selectedCrns.length === 0) {
+      return { error: 'Select at least one schedulable class before sharing.' };
+    }
+
+    return {
+      payload: {
+        v: SHARE_STATE_VERSION,
+        t: String(termId || '').trim(),
+        f: frames.map((frame) => ({ c: frame.c, s: frame.s })),
+        sc: selectedCrns,
+        ui: {
+          onlySel: Boolean(showOnlySelected),
+          showCancel: Boolean(showCancelledCourses),
+          day: focusedDayCode && DAYS.some((entry) => entry.code === focusedDayCode) ? focusedDayCode : null,
+          preview: Boolean(isPdfPreviewOpen),
+        },
+      },
+    };
+  }
+
+  async function shareCurrentSelection() {
+    if (typeof window === 'undefined' || !canShare) {
+      return;
+    }
+
+    const built = buildSharePayload();
+    if (built.error || !built.payload) {
+      setShareStatus({ kind: 'error', message: built.error || 'Could not generate share link.' });
+      return;
+    }
+
+    const shareBaseUrl = `${window.location.origin}${window.location.pathname}`;
+    const requestedMaxLength = Number.parseInt(
+      String(window.__GW_SHARE_MAX_URL_LENGTH ?? MAX_SHARE_URL_LENGTH),
+      10
+    );
+    const maxLength = Number.isFinite(requestedMaxLength) && requestedMaxLength > 0 ? requestedMaxLength : MAX_SHARE_URL_LENGTH;
+    const readableParams = new URLSearchParams(window.location.search);
+    for (const key of SHARE_QUERY_KEYS) {
+      readableParams.delete(key);
+    }
+    readableParams.set(SHARE_QUERY_PARAM_VERSION, String(SHARE_STATE_VERSION));
+    readableParams.set(SHARE_QUERY_PARAM_TERM, built.payload.t);
+    for (const frame of built.payload.f) {
+      readableParams.append(SHARE_QUERY_PARAM_FRAME, `${frame.c}:${frame.s}`);
+    }
+    if (Array.isArray(built.payload.sc) && built.payload.sc.length > 0) {
+      readableParams.set(SHARE_QUERY_PARAM_SELECTION, built.payload.sc.join(','));
+    }
+    readableParams.set(SHARE_QUERY_PARAM_ONLY_SELECTED, built.payload.ui.onlySel ? '1' : '0');
+    readableParams.set(SHARE_QUERY_PARAM_SHOW_CANCELLED, built.payload.ui.showCancel ? '1' : '0');
+    if (built.payload.ui.day) {
+      readableParams.set(SHARE_QUERY_PARAM_DAY, built.payload.ui.day);
+    }
+    if (built.payload.ui.preview) {
+      readableParams.set(SHARE_QUERY_PARAM_PREVIEW, '1');
+    }
+    const readableShareUrl = `${shareBaseUrl}?${readableParams.toString()}`;
+
+    let shareUrlToCopy = readableShareUrl;
+    let usedCompressedFallback = false;
+    if (readableShareUrl.length > maxLength) {
+      let encoded = '';
+      try {
+        encoded = compressToEncodedURIComponent(JSON.stringify(built.payload)) || '';
+      } catch {
+        encoded = '';
+      }
+      if (!encoded) {
+        setShareStatus({ kind: 'error', message: 'Could not compress share link data.' });
+        return;
+      }
+
+      const compressedParams = new URLSearchParams(window.location.search);
+      for (const key of SHARE_QUERY_KEYS) {
+        compressedParams.delete(key);
+      }
+      compressedParams.set(SHARE_QUERY_PARAM_COMPRESSED, encoded);
+      const compressedShareUrl = `${shareBaseUrl}?${compressedParams.toString()}`;
+      if (compressedShareUrl.length > maxLength) {
+        setShareStatus({
+          kind: 'error',
+          message: 'Share link is too large. Reduce selected classes/subjects and try again.',
+        });
+        return;
+      }
+      shareUrlToCopy = compressedShareUrl;
+      usedCompressedFallback = true;
+    }
+
+    try {
+      const copied = await copyTextToClipboard(shareUrlToCopy);
+      if (!copied) {
+        setShareStatus({ kind: 'error', message: 'Copy failed. Clipboard access is unavailable.' });
+        return;
+      }
+      setShareStatus({
+        kind: 'success',
+        message: usedCompressedFallback
+          ? 'Share link copied (compressed fallback).'
+          : 'Share link copied to clipboard.',
+      });
+    } catch {
+      setShareStatus({ kind: 'error', message: 'Copy failed. Check browser clipboard permissions.' });
+    }
+  }
+
   function openPrintView() {
     if (typeof window === 'undefined' || !canPrint) {
       return;
@@ -1236,15 +1768,21 @@ function App() {
     });
   }
 
-  function openPdfPreview() {
-    if (typeof window === 'undefined' || !canPrint) {
+  function openPdfPreview(options = {}) {
+    const { pushHistory = true, clearError = true, force = false } = options;
+    if (typeof window === 'undefined') {
+      return;
+    }
+    if (!force && !canPrint) {
       return;
     }
     closeCourseDetails();
     setFocusedDayCode(null);
     setPrintGeneratedAt(new Date().toISOString());
-    setError('');
-    if (!isPdfPreviewOpen && typeof window.history?.pushState === 'function') {
+    if (clearError) {
+      setError('');
+    }
+    if (pushHistory && !isPdfPreviewOpen && typeof window.history?.pushState === 'function') {
       const currentState =
         window.history.state && typeof window.history.state === 'object' ? window.history.state : {};
       window.history.pushState(
@@ -1255,6 +1793,9 @@ function App() {
         '',
         window.location.href
       );
+      previewManagedByHistoryRef.current = true;
+    } else if (!pushHistory) {
+      previewManagedByHistoryRef.current = false;
     }
     setIsPdfPreviewOpen(true);
 
@@ -1273,6 +1814,7 @@ function App() {
       window.history.back();
       return;
     }
+    previewManagedByHistoryRef.current = false;
     setIsPdfPreviewOpen(false);
     cleanupPrintLayout();
   }
@@ -1284,7 +1826,8 @@ function App() {
 
     const handlePopState = (event) => {
       const isPreviewState = Boolean(event.state && event.state.__gwPdfPreview);
-      if (isPdfPreviewOpen && !isPreviewState) {
+      if (isPdfPreviewOpen && !isPreviewState && previewManagedByHistoryRef.current) {
+        previewManagedByHistoryRef.current = false;
         setIsPdfPreviewOpen(false);
         cleanupPrintLayout();
       }
@@ -1305,7 +1848,11 @@ function App() {
       }
     };
     const handleAfterPrint = () => {
-      cleanupPrintLayout();
+      if (isPdfPreviewOpen) {
+        preparePrintLayout();
+      } else {
+        cleanupPrintLayout();
+      }
     };
 
     window.addEventListener('beforeprint', handleBeforePrint);
@@ -1319,7 +1866,11 @@ function App() {
         }
         return;
       }
-      cleanupPrintLayout();
+      if (isPdfPreviewOpen) {
+        preparePrintLayout();
+      } else {
+        cleanupPrintLayout();
+      }
     };
 
     if (printMediaQuery) {
@@ -1340,9 +1891,22 @@ function App() {
           printMediaQuery.removeListener(handleMediaChange);
         }
       }
-      cleanupPrintLayout();
+      if (!isPdfPreviewOpen) {
+        cleanupPrintLayout();
+      }
     };
-  }, [canPrint, printCourses.length, printIncludeSelectedList]);
+  }, [canPrint, printCourses.length, printIncludeSelectedList, isPdfPreviewOpen]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    if (isPdfPreviewOpen) {
+      preparePrintLayout();
+    } else {
+      cleanupPrintLayout();
+    }
+  }, [isPdfPreviewOpen, printCourses.length, printIncludeCalendar, printIncludeSelectedList]);
 
   async function loadSubjectFrame(targetCampusId, targetTermId, targetSubjectId) {
     const normalizedTargetSubjectId = normalizeSubjectIdValue(targetSubjectId);
@@ -1405,6 +1969,11 @@ function App() {
       subjectId: normalizedTargetSubjectId,
       subjectLabel: frameMeta.subjectLabel,
     });
+    return {
+      frameKey,
+      frameMeta,
+      courses: namespacedCourses,
+    };
   }
 
   async function analyzeSchedule(event) {
@@ -1442,6 +2011,161 @@ function App() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || hasProcessedShareLinkRef.current) {
+      return;
+    }
+
+    hasProcessedShareLinkRef.current = true;
+    const decoded = decodeSharePayloadFromLocation(window.location.search, window.location.hash);
+    if (!decoded) {
+      return;
+    }
+    if (decoded.error || !decoded.payload) {
+      setError(decoded.error || 'Share link data could not be restored.');
+      return;
+    }
+
+    async function restoreFromSharePayload() {
+      const payload = decoded.payload;
+      setLoading(true);
+      setError('');
+      setShareStatus(null);
+      setSearch('');
+      closeCourseDetails();
+      setSubjectFrames([]);
+      setSelectedIds(new Set());
+      setExpandedLinkedParentIds(new Set());
+      setCollapsedFrameKeys(new Set());
+      setIsSelectedFrameCollapsed(true);
+      setIsPdfPreviewOpen(false);
+      setFocusedDayCode(payload.ui.day || null);
+      setShowOnlySelected(Boolean(payload.ui.onlySel));
+      setShowCancelledCourses(Boolean(payload.ui.showCancel));
+      setPendingShareRestorePreview(Boolean(payload.ui.preview));
+
+      if (payload.f.length > 0) {
+        setCampusId(payload.f[0].c);
+        setSubjectId(payload.f[0].s);
+      }
+      setTermId(payload.t);
+
+      const loadedFrameKeys = new Set();
+      const failedFrames = [];
+      for (const frame of payload.f) {
+        try {
+          const loaded = await loadSubjectFrame(frame.c, payload.t, frame.s);
+          if (loaded?.frameKey) {
+            loadedFrameKeys.add(loaded.frameKey);
+          }
+        } catch (requestError) {
+          failedFrames.push(
+            `${frame.s} (${campusLabelForCampusId(frame.c)}): ${formatLoadError(requestError)}`
+          );
+        }
+      }
+
+      if (loadedFrameKeys.size === 0) {
+        setError('Share link could not load any subjects.');
+        setLoading(false);
+        return;
+      }
+
+      const selectionEntries = Array.isArray(payload.sel)
+        ? payload.sel.filter((entry) => loadedFrameKeys.has(entry.fk))
+        : [];
+      const selectedCrns = Array.isArray(payload.sc)
+        ? [...new Set(payload.sc.map((value) => String(value || '').trim()).filter(Boolean))]
+        : [];
+      setPendingShareRestoreSelection({
+        expectedFrameKeys: [...loadedFrameKeys],
+        entries: selectionEntries,
+        crns: selectedCrns,
+      });
+
+      if (failedFrames.length > 0) {
+        setError(
+          `Share link loaded with warnings: ${failedFrames.length} subject frame(s) failed to load. ${failedFrames.join(' | ')}`
+        );
+      }
+
+      setLoading(false);
+    }
+
+    void restoreFromSharePayload();
+  }, []);
+
+  useEffect(() => {
+    if (!pendingShareRestoreSelection) {
+      return;
+    }
+
+    const loadedFrameKeys = new Set(subjectFrames.map((frame) => frame.key));
+    const allExpectedFramesLoaded = pendingShareRestoreSelection.expectedFrameKeys.every((key) =>
+      loadedFrameKeys.has(key)
+    );
+    if (!allExpectedFramesLoaded) {
+      return;
+    }
+
+    const selectedFromShare = new Set();
+    const unmatchedEntries = [];
+    const selectedCrnSet = new Set(
+      (pendingShareRestoreSelection.crns ?? [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    );
+    const matchedCrnSet = new Set();
+
+    for (const entry of pendingShareRestoreSelection.entries) {
+      const targetKey = normalizedCrnListKey(entry.cr);
+      const matchedCourse = courses.find(
+        (course) =>
+          isSchedulableCourse(course) &&
+          String(course.frameKey || '').trim() === entry.fk &&
+          normalizedCrnListKey(normalizedCrnListForCourse(course)) === targetKey
+      );
+      if (matchedCourse) {
+        selectedFromShare.add(matchedCourse.id);
+      } else {
+        unmatchedEntries.push(entry);
+      }
+    }
+
+    if (selectedCrnSet.size > 0) {
+      for (const course of courses) {
+        if (!isSchedulableCourse(course)) {
+          continue;
+        }
+        const courseCrns = normalizedCrnListForCourse(course);
+        const hasSelectedCrn = courseCrns.some((crn) => selectedCrnSet.has(crn));
+        if (!hasSelectedCrn) {
+          continue;
+        }
+        selectedFromShare.add(course.id);
+        for (const crn of courseCrns) {
+          if (selectedCrnSet.has(crn)) {
+            matchedCrnSet.add(crn);
+          }
+        }
+      }
+    }
+
+    setSelectedIds(selectedFromShare);
+    setPendingShareRestoreSelection(null);
+
+    const unmatchedCrnCount = [...selectedCrnSet].filter((crn) => !matchedCrnSet.has(crn)).length;
+    const unmatchedCount = unmatchedEntries.length + unmatchedCrnCount;
+    if (unmatchedCount > 0) {
+      const warning = `Share link loaded, but ${unmatchedCount} selected class selection(s) could not be matched in current schedule data.`;
+      setError((previous) => (previous ? `${previous} ${warning}` : warning));
+    }
+    if (pendingShareRestorePreview) {
+      openPdfPreview({ pushHistory: false, clearError: false, force: true });
+      setPendingShareRestorePreview(false);
+    }
+  }, [pendingShareRestoreSelection, subjectFrames, courses, pendingShareRestorePreview]);
 
   function toggleCourse(id) {
     const course = courses.find((entry) => entry.id === id);
@@ -2129,6 +2853,15 @@ function App() {
                       <div className="print-controls-buttons">
                         <button
                           type="button"
+                          className="view-toggle-button share-trigger-button"
+                          onClick={shareCurrentSelection}
+                          disabled={!canShare}
+                          aria-label="Copy share link"
+                        >
+                          Share
+                        </button>
+                        <button
+                          type="button"
                           className="view-toggle-button print-preview-button"
                           onClick={openPdfPreview}
                           disabled={!canPrint}
@@ -2167,6 +2900,9 @@ function App() {
                         Selected Course List
                       </label>
                     </div>
+                    {shareStatus ? (
+                      <p className={`share-status share-status-${shareStatus.kind}`}>{shareStatus.message}</p>
+                    ) : null}
                   </div>
                 </div>
               </div>
