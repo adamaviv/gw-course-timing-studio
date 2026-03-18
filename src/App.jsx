@@ -2847,19 +2847,35 @@ function App() {
                       Week View
                     </button>
                   ) : null}
+                  <div className="share-controls-panel" aria-label="Share controls">
+                    <div className="share-controls-top">
+                      <span className="share-controls-title">Share Link</span>
+                      <button
+                        type="button"
+                        className="view-toggle-button share-trigger-button"
+                        onClick={shareCurrentSelection}
+                        disabled={!canShare}
+                        aria-label="Copy share link"
+                      >
+                        <span className="share-icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" focusable="false">
+                            <circle cx="6" cy="12" r="2.4" />
+                            <circle cx="16.5" cy="6.5" r="2.4" />
+                            <circle cx="16.5" cy="17.5" r="2.4" />
+                            <path d="M8.1 10.9 14.4 7.6" />
+                            <path d="m8.1 13.1 6.3 3.3" />
+                          </svg>
+                        </span>
+                      </button>
+                    </div>
+                    {shareStatus ? (
+                      <p className={`share-status share-status-${shareStatus.kind}`}>{shareStatus.message}</p>
+                    ) : null}
+                  </div>
                   <div className="print-controls-panel" aria-label="Print controls">
                     <div className="print-controls-top">
                       <span className="print-controls-title">Print Options</span>
                       <div className="print-controls-buttons">
-                        <button
-                          type="button"
-                          className="view-toggle-button share-trigger-button"
-                          onClick={shareCurrentSelection}
-                          disabled={!canShare}
-                          aria-label="Copy share link"
-                        >
-                          Share
-                        </button>
                         <button
                           type="button"
                           className="view-toggle-button print-preview-button"
@@ -2900,9 +2916,6 @@ function App() {
                         Selected Course List
                       </label>
                     </div>
-                    {shareStatus ? (
-                      <p className={`share-status share-status-${shareStatus.kind}`}>{shareStatus.message}</p>
-                    ) : null}
                   </div>
                 </div>
               </div>

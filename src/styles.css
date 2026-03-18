@@ -636,6 +636,23 @@ button:disabled {
   min-width: 230px;
 }
 
+.share-controls-panel {
+  border: 1px solid #c0ccea;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f7f9ff, #eef2ff);
+  padding: 0.38rem 0.45rem 0.42rem;
+  display: grid;
+  gap: 0.32rem;
+  min-width: 188px;
+}
+
+.share-controls-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 .print-controls-top {
   display: flex;
   align-items: center;
@@ -655,6 +672,14 @@ button:disabled {
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: #235060;
+}
+
+.share-controls-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #2b4c8b;
 }
 
 .print-options-row {
@@ -726,6 +751,9 @@ button:disabled {
   background: #eef3ff;
   color: #1e3f7a;
   border-color: #99abd8;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .share-trigger-button:hover {
@@ -739,8 +767,26 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.share-icon {
+  width: 0.86rem;
+  height: 0.86rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.share-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .share-status {
-  margin: 0.14rem 0 0;
+  margin: 0.22rem 0 0;
   font-size: 0.75rem;
   line-height: 1.2;
 }
