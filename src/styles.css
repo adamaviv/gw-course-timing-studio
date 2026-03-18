@@ -324,12 +324,15 @@ button:disabled {
 }
 
 .tools-panel-header {
-  display: grid;
-  gap: 0.6rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
 }
 
 .tools-panel-actions {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(240px, 280px));
   gap: 0.9rem;
@@ -340,7 +343,8 @@ button:disabled {
 }
 
 .tools-panel-header h2 {
-  margin: 0;
+  margin: 0.08rem 0 0;
+  flex: 0 0 auto;
 }
 
 .course-panel,
@@ -649,12 +653,12 @@ button:disabled {
   border: 1px solid #b8d0d6;
   border-radius: 12px;
   background: linear-gradient(180deg, #f6fbff, #e9f4f8);
-  padding: 0.28rem 0.4rem 0.3rem;
+  padding: 0.28rem 0.4rem 0.08rem;
   display: grid;
   gap: 0.24rem;
   width: 100%;
   max-width: none;
-  min-height: 74px;
+  min-height: 64px;
   height: 100%;
   align-content: start;
 }
@@ -663,12 +667,12 @@ button:disabled {
   border: 1px solid #c8b6df;
   border-radius: 12px;
   background: linear-gradient(180deg, #f8f3ff, #f0e7ff);
-  padding: 0.28rem 0.4rem 0.3rem;
+  padding: 0.28rem 0.4rem 0.08rem;
   display: grid;
   gap: 0.24rem;
   width: 100%;
   max-width: none;
-  min-height: 74px;
+  min-height: 64px;
   height: 100%;
   align-content: start;
   justify-items: start;
@@ -686,14 +690,16 @@ button:disabled {
   border: 1px solid #c0ccea;
   border-radius: 12px;
   background: linear-gradient(180deg, #f7f9ff, #eef2ff);
-  padding: 0.28rem 0.4rem 0.3rem;
+  padding: 0.28rem 0.4rem 0.08rem;
   display: grid;
   gap: 0.24rem;
   width: 100%;
   max-width: none;
-  min-height: 74px;
+  min-height: 64px;
   height: 100%;
   align-content: start;
+  position: relative;
+  overflow: visible;
 }
 
 .share-controls-top {
@@ -901,9 +907,6 @@ button:disabled {
 }
 
 .share-toast {
-  position: fixed;
-  right: 1rem;
-  bottom: 1rem;
   z-index: 1200;
   max-width: min(430px, calc(100vw - 2rem));
   font-size: 0.84rem;
@@ -913,6 +916,14 @@ button:disabled {
   padding: 0.52rem 0.68rem;
   box-shadow: 0 10px 24px rgba(20, 44, 55, 0.18);
   pointer-events: none;
+}
+
+.share-toast-above-share {
+  position: absolute;
+  right: 0.32rem;
+  top: -0.24rem;
+  transform: translateY(-100%);
+  max-width: 290px;
 }
 
 .share-toast-success {
@@ -984,8 +995,9 @@ button:disabled {
   font-size: 0.68rem;
   line-height: 1.15;
   color: #563b75;
-  text-align: center;
+  text-align: right;
   white-space: normal;
+  width: 100%;
 }
 
 .course-detail-box {
@@ -1767,7 +1779,13 @@ body.print-prep .print-detail-card:last-child {
     grid-template-columns: 1fr;
   }
 
+  .tools-panel-header {
+    display: grid;
+    gap: 0.6rem;
+  }
+
   .tools-panel-actions {
+    width: 100%;
     padding: 0;
     grid-template-columns: 1fr;
   }
@@ -1780,7 +1798,7 @@ body.print-prep .print-detail-card:last-child {
   .save-state-panel,
   .print-controls-panel {
     width: min(100%, 360px);
-    min-height: 74px;
+    min-height: 64px;
   }
 
   .course-list {

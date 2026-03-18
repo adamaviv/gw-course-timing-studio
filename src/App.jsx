@@ -2837,6 +2837,15 @@ function App() {
                       </span>
                     </button>
                   </div>
+                  {shareStatus ? (
+                    <div
+                      className={`share-toast share-toast-above-share share-toast-${shareStatus.kind} share-status share-status-${shareStatus.kind}`}
+                      role="status"
+                      aria-live={shareStatus.kind === 'error' ? 'assertive' : 'polite'}
+                    >
+                      {shareStatus.message}
+                    </div>
+                  ) : null}
                   <div className="share-options-row">
                     <label className="share-option-toggle">
                       <input
@@ -3202,16 +3211,6 @@ function App() {
             </div>
           </section>
         </main>
-      ) : null}
-
-      {shareStatus ? (
-        <div
-          className={`share-toast share-toast-${shareStatus.kind}`}
-          role="status"
-          aria-live={shareStatus.kind === 'error' ? 'assertive' : 'polite'}
-        >
-          {shareStatus.message}
-        </div>
       ) : null}
 
       {subjectFrames.length > 0 ? (
