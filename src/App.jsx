@@ -2813,11 +2813,11 @@ function App() {
       {subjectFrames.length > 0 ? (
         <main className="workspace">
           <section className="tools-panel" aria-label="Tools">
-            <div className="tools-panel-header">
+            <div className="tools-panel-strip">
               <h2>Tools</h2>
-              <div className="tools-panel-actions">
-                <div className="share-controls-panel" aria-label="Share controls">
-                  <div className="share-controls-top">
+              <div className="tools-strip-groups">
+                <div className="tools-group tools-group-share" aria-label="Share controls">
+                  <div className="tools-group-top">
                     <span className="share-controls-title">Share Link</span>
                     <button
                       type="button"
@@ -2858,8 +2858,9 @@ function App() {
                     </label>
                   </div>
                 </div>
-                <div className="save-state-panel" aria-label="Save state controls">
-                  <div className="save-state-top">
+
+                <div className="tools-group tools-group-save" aria-label="Save state controls">
+                  <div className="tools-group-top">
                     <span className="save-state-title">Save State</span>
                     <button
                       type="button"
@@ -2878,12 +2879,11 @@ function App() {
                       </span>
                     </button>
                   </div>
-                  <p className="save-state-note">
-                    Adds a browser history checkpoint.
-                  </p>
+                  <p className="save-state-note">Adds a browser history checkpoint.</p>
                 </div>
-                <div className="print-controls-panel" aria-label="Print controls">
-                  <div className="print-controls-top">
+
+                <div className="tools-group tools-group-print" aria-label="Print controls">
+                  <div className="tools-group-top">
                     <span className="print-controls-title">Print Options</span>
                     <div className="print-controls-buttons">
                       <button
@@ -2905,26 +2905,26 @@ function App() {
                         Print
                       </button>
                     </div>
-                    <div className="print-options-row">
-                      <label className="print-option-toggle">
-                        <input
-                          type="checkbox"
-                          checked={printIncludeCalendar}
-                          onChange={(event) => setPrintIncludeCalendar(event.target.checked)}
-                          aria-label="Include calendar in print"
-                        />
-                        Calendar
-                      </label>
-                      <label className="print-option-toggle">
-                        <input
-                          type="checkbox"
-                          checked={printIncludeSelectedList}
-                          onChange={(event) => setPrintIncludeSelectedList(event.target.checked)}
-                          aria-label="Include selected course list in print"
-                        />
-                        Selected Course List
-                      </label>
-                    </div>
+                  </div>
+                  <div className="print-options-row">
+                    <label className="print-option-toggle">
+                      <input
+                        type="checkbox"
+                        checked={printIncludeCalendar}
+                        onChange={(event) => setPrintIncludeCalendar(event.target.checked)}
+                        aria-label="Include calendar in print"
+                      />
+                      Calendar
+                    </label>
+                    <label className="print-option-toggle">
+                      <input
+                        type="checkbox"
+                        checked={printIncludeSelectedList}
+                        onChange={(event) => setPrintIncludeSelectedList(event.target.checked)}
+                        aria-label="Include selected course list in print"
+                      />
+                      Selected Course List
+                    </label>
                   </div>
                 </div>
               </div>

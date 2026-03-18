@@ -318,33 +318,58 @@ button:disabled {
 
 .tools-panel {
   grid-column: 1 / -1;
-  padding: 0.75rem 0.95rem;
-  display: grid;
-  gap: 0.5rem;
+  padding: 0.62rem 0.95rem;
 }
 
-.tools-panel-header {
+.tools-panel-strip {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.8rem;
+  gap: 0.75rem;
 }
 
-.tools-panel-actions {
-  flex: 1 1 auto;
-  width: auto;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(240px, 280px));
-  gap: 0.9rem;
-  padding: 0;
-  align-items: stretch;
-  justify-items: stretch;
-  justify-content: flex-end;
-}
-
-.tools-panel-header h2 {
+.tools-panel-strip h2 {
   margin: 0.08rem 0 0;
   flex: 0 0 auto;
+}
+
+.tools-strip-groups {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 0.72rem;
+}
+
+.tools-group {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.18rem;
+  padding-left: 0.72rem;
+  border-left: 1px solid #cfdae0;
+}
+
+.tools-group:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.tools-group-top {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.34rem;
+}
+
+.tools-group-share {
+  position: relative;
+  overflow: visible;
+}
+
+.tools-group-print {
+  justify-items: end;
 }
 
 .course-panel,
@@ -752,7 +777,6 @@ button:disabled {
 }
 
 .print-options-row {
-  grid-area: options;
   display: flex;
   gap: 0.16rem;
   flex-wrap: nowrap;
@@ -790,7 +814,7 @@ button:disabled {
 .print-trigger-button,
 .share-trigger-button,
 .save-state-trigger-button {
-  width: 3.3rem;
+  width: 3.18rem;
   height: 1.76rem;
 }
 
@@ -843,8 +867,6 @@ button:disabled {
   border-color: #b5ccd3;
   box-shadow: inset 0 0 0 1px #d8e6ea;
   font-size: 0.7rem;
-  width: 3.47rem;
-  transform: translateX(-5%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -920,8 +942,8 @@ button:disabled {
 
 .share-toast-above-share {
   position: absolute;
-  right: 0.32rem;
-  top: -0.24rem;
+  right: 0;
+  top: -0.16rem;
   transform: translateY(-100%);
   max-width: 290px;
 }
@@ -1779,26 +1801,33 @@ body.print-prep .print-detail-card:last-child {
     grid-template-columns: 1fr;
   }
 
-  .tools-panel-header {
+  .tools-panel-strip {
     display: grid;
-    gap: 0.6rem;
+    grid-template-columns: 1fr;
+    gap: 0.45rem;
   }
 
-  .tools-panel-actions {
+  .tools-strip-groups {
     width: 100%;
-    padding: 0;
-    grid-template-columns: 1fr;
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    justify-content: end;
+    align-items: start;
+    gap: 0.55rem 0.72rem;
+  }
+
+  .tools-group {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .tools-group-print {
+    grid-column: 1 / -1;
+    justify-self: end;
   }
 
   .print-options-row {
     flex-wrap: wrap;
-  }
-
-  .share-controls-panel,
-  .save-state-panel,
-  .print-controls-panel {
-    width: min(100%, 360px);
-    min-height: 64px;
   }
 
   .course-list {
@@ -1817,5 +1846,34 @@ body.print-prep .print-detail-card:last-child {
 
   .buttons-row {
     align-items: flex-start;
+  }
+
+  .tools-strip-groups {
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+    justify-content: stretch;
+    gap: 0.45rem;
+  }
+
+  .tools-group,
+  .tools-group-print {
+    justify-self: stretch;
+  }
+
+  .tools-group-top {
+    justify-content: space-between;
+  }
+
+  .print-options-row {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .share-options-row {
+    justify-content: flex-start;
+  }
+
+  .save-state-note {
+    text-align: left;
   }
 }
