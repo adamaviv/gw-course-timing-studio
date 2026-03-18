@@ -76,6 +76,7 @@ const SHARE_QUERY_KEYS = [
 const SHARE_STATE_VERSION = 1;
 const MAX_SHARE_URL_LENGTH = 6000;
 const SHARE_STATUS_RESET_MS = 5000;
+const SHARE_AUTO_SYNC_DEBOUNCE_MS = 400;
 
 function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -669,6 +670,83 @@ function decodeSharePayloadFromLocation(searchValue, hashValue) {
   return decodeCompressedSharePayload(hashParams.get(SHARE_HASH_PARAM_LEGACY));
 }
 
+function parseShareMaxUrlLength(rawValue) {
+  const requestedMaxLength = Number.parseInt(String(rawValue ?? MAX_SHARE_URL_LENGTH), 10);
+  return Number.isFinite(requestedMaxLength) && requestedMaxLength > 0 ? requestedMaxLength : MAX_SHARE_URL_LENGTH;
+}
+
+function searchParamsWithoutShare(searchValue) {
+  const params = new URLSearchParams(String(searchValue || '').replace(/^\?/, ''));
+  for (const key of SHARE_QUERY_KEYS) {
+    params.delete(key);
+  }
+  return params;
+}
+
+function urlFromBaseAndParams(baseUrl, params) {
+  const queryText = params.toString();
+  return queryText ? `${baseUrl}?${queryText}` : baseUrl;
+}
+
+function buildShareUrlFromPayload(payload, searchValue, baseUrl, maxLength) {
+  if (!payload || typeof payload !== 'object') {
+    return { error: 'Could not generate share link.' };
+  }
+
+  const readableParams = searchParamsWithoutShare(searchValue);
+  readableParams.set(SHARE_QUERY_PARAM_VERSION, String(SHARE_STATE_VERSION));
+  readableParams.set(SHARE_QUERY_PARAM_TERM, String(payload.t || '').trim());
+  for (const frame of payload.f ?? []) {
+    readableParams.append(SHARE_QUERY_PARAM_FRAME, `${frame.c}:${frame.s}`);
+  }
+  if (Array.isArray(payload.sc) && payload.sc.length > 0) {
+    readableParams.set(SHARE_QUERY_PARAM_SELECTION, payload.sc.join(','));
+  }
+  readableParams.set(SHARE_QUERY_PARAM_ONLY_SELECTED, payload.ui?.onlySel ? '1' : '0');
+  readableParams.set(SHARE_QUERY_PARAM_SHOW_CANCELLED, payload.ui?.showCancel ? '1' : '0');
+  if (payload.ui?.day) {
+    readableParams.set(SHARE_QUERY_PARAM_DAY, payload.ui.day);
+  }
+  if (payload.ui?.preview) {
+    readableParams.set(SHARE_QUERY_PARAM_PREVIEW, '1');
+  }
+
+  const readableUrl = urlFromBaseAndParams(baseUrl, readableParams);
+  if (readableUrl.length <= maxLength) {
+    return {
+      url: readableUrl,
+      usedCompressedFallback: false,
+    };
+  }
+
+  let encoded = '';
+  try {
+    encoded = compressToEncodedURIComponent(JSON.stringify(payload)) || '';
+  } catch {
+    encoded = '';
+  }
+  if (!encoded) {
+    return { error: 'Could not compress share link data.' };
+  }
+
+  const compressedParams = searchParamsWithoutShare(searchValue);
+  compressedParams.set(SHARE_QUERY_PARAM_COMPRESSED, encoded);
+  const compressedUrl = urlFromBaseAndParams(baseUrl, compressedParams);
+  if (compressedUrl.length > maxLength) {
+    return { error: 'Share link is too large. Reduce selected classes/subjects and try again.' };
+  }
+
+  return {
+    url: compressedUrl,
+    usedCompressedFallback: true,
+  };
+}
+
+function buildUrlWithoutShareParams(searchValue, baseUrl) {
+  const params = searchParamsWithoutShare(searchValue);
+  return urlFromBaseAndParams(baseUrl, params);
+}
+
 function commentEntriesForCourse(course) {
   if (Array.isArray(course.commentDetails) && course.commentDetails.length > 0) {
     return course.commentDetails
@@ -865,11 +943,13 @@ function App() {
   const [printGeneratedAt, setPrintGeneratedAt] = useState('');
   const [printIncludeCalendar, setPrintIncludeCalendar] = useState(true);
   const [printIncludeSelectedList, setPrintIncludeSelectedList] = useState(true);
+  const [shareIncludePreview, setShareIncludePreview] = useState(false);
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
   const [shareStatus, setShareStatus] = useState(null);
   const [pendingShareRestoreSelection, setPendingShareRestoreSelection] = useState(null);
   const [pendingShareRestorePreview, setPendingShareRestorePreview] = useState(false);
   const hasProcessedShareLinkRef = useRef(false);
+  const isShareRestoreInFlightRef = useRef(false);
   const previewManagedByHistoryRef = useRef(false);
   const normalizedSubjectId = useMemo(() => normalizeSubjectIdValue(subjectId), [subjectId]);
   const scheduleUrl = useMemo(
@@ -1252,6 +1332,7 @@ function App() {
   );
   const canPrint = printCourses.length > 0 && (printIncludeCalendar || printIncludeSelectedList);
   const canShare = selectedCourses.length > 0;
+  const canSaveState = subjectFrames.length > 0;
   function courseCampusLabel(course) {
     return (
       String(course?.frameCampusLabel || '').trim() ||
@@ -1609,7 +1690,8 @@ function App() {
     return copied;
   }
 
-  function buildSharePayload() {
+  function buildSharePayload(options = {}) {
+    const { allowEmptySelection = false, includePreview = Boolean(isPdfPreviewOpen) } = options;
     const frames = subjectFrames.map((frame) => ({
       c: String(frame.campusId || '').trim(),
       s: normalizeSubjectIdValue(frame.subjectId),
@@ -1638,11 +1720,11 @@ function App() {
       selectedEntries.push({ fk: frameKey, cr: crns });
     }
 
-    if (selectedEntries.length === 0) {
+    if (!allowEmptySelection && selectedEntries.length === 0) {
       return { error: 'Select at least one schedulable class before sharing.' };
     }
     const selectedCrns = [...new Set(selectedEntries.flatMap((entry) => entry.cr))].sort();
-    if (selectedCrns.length === 0) {
+    if (!allowEmptySelection && selectedCrns.length === 0) {
       return { error: 'Select at least one schedulable class before sharing.' };
     }
 
@@ -1656,7 +1738,7 @@ function App() {
           onlySel: Boolean(showOnlySelected),
           showCancel: Boolean(showCancelledCourses),
           day: focusedDayCode && DAYS.some((entry) => entry.code === focusedDayCode) ? focusedDayCode : null,
-          preview: Boolean(isPdfPreviewOpen),
+          preview: Boolean(includePreview),
         },
       },
     };
@@ -1667,86 +1749,77 @@ function App() {
       return;
     }
 
-    const built = buildSharePayload();
+    const built = buildSharePayload({ includePreview: shareIncludePreview });
     if (built.error || !built.payload) {
       setShareStatus({ kind: 'error', message: built.error || 'Could not generate share link.' });
       return;
     }
 
     const shareBaseUrl = `${window.location.origin}${window.location.pathname}`;
-    const requestedMaxLength = Number.parseInt(
-      String(window.__GW_SHARE_MAX_URL_LENGTH ?? MAX_SHARE_URL_LENGTH),
-      10
+    const maxLength = parseShareMaxUrlLength(
+      typeof window === 'undefined' ? MAX_SHARE_URL_LENGTH : window.__GW_SHARE_MAX_URL_LENGTH
     );
-    const maxLength = Number.isFinite(requestedMaxLength) && requestedMaxLength > 0 ? requestedMaxLength : MAX_SHARE_URL_LENGTH;
-    const readableParams = new URLSearchParams(window.location.search);
-    for (const key of SHARE_QUERY_KEYS) {
-      readableParams.delete(key);
-    }
-    readableParams.set(SHARE_QUERY_PARAM_VERSION, String(SHARE_STATE_VERSION));
-    readableParams.set(SHARE_QUERY_PARAM_TERM, built.payload.t);
-    for (const frame of built.payload.f) {
-      readableParams.append(SHARE_QUERY_PARAM_FRAME, `${frame.c}:${frame.s}`);
-    }
-    if (Array.isArray(built.payload.sc) && built.payload.sc.length > 0) {
-      readableParams.set(SHARE_QUERY_PARAM_SELECTION, built.payload.sc.join(','));
-    }
-    readableParams.set(SHARE_QUERY_PARAM_ONLY_SELECTED, built.payload.ui.onlySel ? '1' : '0');
-    readableParams.set(SHARE_QUERY_PARAM_SHOW_CANCELLED, built.payload.ui.showCancel ? '1' : '0');
-    if (built.payload.ui.day) {
-      readableParams.set(SHARE_QUERY_PARAM_DAY, built.payload.ui.day);
-    }
-    if (built.payload.ui.preview) {
-      readableParams.set(SHARE_QUERY_PARAM_PREVIEW, '1');
-    }
-    const readableShareUrl = `${shareBaseUrl}?${readableParams.toString()}`;
-
-    let shareUrlToCopy = readableShareUrl;
-    let usedCompressedFallback = false;
-    if (readableShareUrl.length > maxLength) {
-      let encoded = '';
-      try {
-        encoded = compressToEncodedURIComponent(JSON.stringify(built.payload)) || '';
-      } catch {
-        encoded = '';
-      }
-      if (!encoded) {
-        setShareStatus({ kind: 'error', message: 'Could not compress share link data.' });
-        return;
-      }
-
-      const compressedParams = new URLSearchParams(window.location.search);
-      for (const key of SHARE_QUERY_KEYS) {
-        compressedParams.delete(key);
-      }
-      compressedParams.set(SHARE_QUERY_PARAM_COMPRESSED, encoded);
-      const compressedShareUrl = `${shareBaseUrl}?${compressedParams.toString()}`;
-      if (compressedShareUrl.length > maxLength) {
-        setShareStatus({
-          kind: 'error',
-          message: 'Share link is too large. Reduce selected classes/subjects and try again.',
-        });
-        return;
-      }
-      shareUrlToCopy = compressedShareUrl;
-      usedCompressedFallback = true;
+    const builtUrl = buildShareUrlFromPayload(built.payload, window.location.search, shareBaseUrl, maxLength);
+    if (builtUrl.error || !builtUrl.url) {
+      setShareStatus({ kind: 'error', message: builtUrl.error || 'Could not generate share link.' });
+      return;
     }
 
     try {
-      const copied = await copyTextToClipboard(shareUrlToCopy);
+      const copied = await copyTextToClipboard(builtUrl.url);
       if (!copied) {
         setShareStatus({ kind: 'error', message: 'Copy failed. Clipboard access is unavailable.' });
         return;
       }
       setShareStatus({
         kind: 'success',
-        message: usedCompressedFallback
+        message: builtUrl.usedCompressedFallback
           ? 'Share link copied (compressed fallback).'
-          : 'Share link copied to clipboard.',
+          : shareIncludePreview
+            ? 'Share link copied with print preview.'
+            : 'Share link copied to clipboard.',
       });
     } catch {
       setShareStatus({ kind: 'error', message: 'Copy failed. Check browser clipboard permissions.' });
     }
+  }
+
+  function saveCurrentStateToHistory() {
+    if (typeof window === 'undefined' || !canSaveState) {
+      return;
+    }
+
+    const built = buildSharePayload({ allowEmptySelection: true });
+    if (built.error || !built.payload) {
+      setShareStatus({ kind: 'error', message: built.error || 'Could not save state.' });
+      return;
+    }
+
+    const shareBaseUrl = `${window.location.origin}${window.location.pathname}`;
+    const maxLength = parseShareMaxUrlLength(window.__GW_SHARE_MAX_URL_LENGTH);
+    const builtUrl = buildShareUrlFromPayload(built.payload, window.location.search, shareBaseUrl, maxLength);
+    if (builtUrl.error || !builtUrl.url) {
+      setShareStatus({ kind: 'error', message: builtUrl.error || 'Could not save state.' });
+      return;
+    }
+
+    if (typeof window.history?.pushState === 'function') {
+      const currentState =
+        window.history.state && typeof window.history.state === 'object' ? window.history.state : {};
+      window.history.pushState(
+        {
+          ...currentState,
+          __gwSavedWorkspace: true,
+        },
+        '',
+        builtUrl.url
+      );
+    }
+
+    setShareStatus({
+      kind: 'success',
+      message: 'State saved. Use browser Back/Forward to return to this checkpoint.',
+    });
   }
 
   function openPrintView() {
@@ -1830,7 +1903,21 @@ function App() {
         previewManagedByHistoryRef.current = false;
         setIsPdfPreviewOpen(false);
         cleanupPrintLayout();
+        return;
       }
+
+      if (isShareRestoreInFlightRef.current) {
+        return;
+      }
+      const decoded = decodeSharePayloadFromLocation(window.location.search, window.location.hash);
+      if (!decoded) {
+        return;
+      }
+      if (decoded.error || !decoded.payload) {
+        setError(decoded.error || 'Share link data could not be restored.');
+        return;
+      }
+      void restoreWorkspaceFromSharePayload(decoded.payload);
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -2012,6 +2099,78 @@ function App() {
     }
   }
 
+  async function restoreWorkspaceFromSharePayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+      setError('Share link data could not be restored.');
+      return;
+    }
+
+    isShareRestoreInFlightRef.current = true;
+    setLoading(true);
+    setError('');
+    setShareStatus(null);
+    setSearch('');
+    closeCourseDetails();
+    setSubjectFrames([]);
+    setSelectedIds(new Set());
+    setExpandedLinkedParentIds(new Set());
+    setCollapsedFrameKeys(new Set());
+    setIsSelectedFrameCollapsed(true);
+    setIsPdfPreviewOpen(false);
+    setFocusedDayCode(payload.ui.day || null);
+    setShowOnlySelected(Boolean(payload.ui.onlySel));
+    setShowCancelledCourses(Boolean(payload.ui.showCancel));
+    setPendingShareRestorePreview(Boolean(payload.ui.preview));
+
+    if (payload.f.length > 0) {
+      setCampusId(payload.f[0].c);
+      setSubjectId(payload.f[0].s);
+    }
+    setTermId(payload.t);
+
+    const loadedFrameKeys = new Set();
+    const failedFrames = [];
+    for (const frame of payload.f) {
+      try {
+        const loaded = await loadSubjectFrame(frame.c, payload.t, frame.s);
+        if (loaded?.frameKey) {
+          loadedFrameKeys.add(loaded.frameKey);
+        }
+      } catch (requestError) {
+        failedFrames.push(
+          `${frame.s} (${campusLabelForCampusId(frame.c)}): ${formatLoadError(requestError)}`
+        );
+      }
+    }
+
+    if (loadedFrameKeys.size === 0) {
+      isShareRestoreInFlightRef.current = false;
+      setError('Share link could not load any subjects.');
+      setLoading(false);
+      return;
+    }
+
+    const selectionEntries = Array.isArray(payload.sel)
+      ? payload.sel.filter((entry) => loadedFrameKeys.has(entry.fk))
+      : [];
+    const selectedCrns = Array.isArray(payload.sc)
+      ? [...new Set(payload.sc.map((value) => String(value || '').trim()).filter(Boolean))]
+      : [];
+    setPendingShareRestoreSelection({
+      expectedFrameKeys: [...loadedFrameKeys],
+      entries: selectionEntries,
+      crns: selectedCrns,
+    });
+
+    if (failedFrames.length > 0) {
+      setError(
+        `Share link loaded with warnings: ${failedFrames.length} subject frame(s) failed to load. ${failedFrames.join(' | ')}`
+      );
+    }
+
+    setLoading(false);
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined' || hasProcessedShareLinkRef.current) {
       return;
@@ -2027,73 +2186,7 @@ function App() {
       return;
     }
 
-    async function restoreFromSharePayload() {
-      const payload = decoded.payload;
-      setLoading(true);
-      setError('');
-      setShareStatus(null);
-      setSearch('');
-      closeCourseDetails();
-      setSubjectFrames([]);
-      setSelectedIds(new Set());
-      setExpandedLinkedParentIds(new Set());
-      setCollapsedFrameKeys(new Set());
-      setIsSelectedFrameCollapsed(true);
-      setIsPdfPreviewOpen(false);
-      setFocusedDayCode(payload.ui.day || null);
-      setShowOnlySelected(Boolean(payload.ui.onlySel));
-      setShowCancelledCourses(Boolean(payload.ui.showCancel));
-      setPendingShareRestorePreview(Boolean(payload.ui.preview));
-
-      if (payload.f.length > 0) {
-        setCampusId(payload.f[0].c);
-        setSubjectId(payload.f[0].s);
-      }
-      setTermId(payload.t);
-
-      const loadedFrameKeys = new Set();
-      const failedFrames = [];
-      for (const frame of payload.f) {
-        try {
-          const loaded = await loadSubjectFrame(frame.c, payload.t, frame.s);
-          if (loaded?.frameKey) {
-            loadedFrameKeys.add(loaded.frameKey);
-          }
-        } catch (requestError) {
-          failedFrames.push(
-            `${frame.s} (${campusLabelForCampusId(frame.c)}): ${formatLoadError(requestError)}`
-          );
-        }
-      }
-
-      if (loadedFrameKeys.size === 0) {
-        setError('Share link could not load any subjects.');
-        setLoading(false);
-        return;
-      }
-
-      const selectionEntries = Array.isArray(payload.sel)
-        ? payload.sel.filter((entry) => loadedFrameKeys.has(entry.fk))
-        : [];
-      const selectedCrns = Array.isArray(payload.sc)
-        ? [...new Set(payload.sc.map((value) => String(value || '').trim()).filter(Boolean))]
-        : [];
-      setPendingShareRestoreSelection({
-        expectedFrameKeys: [...loadedFrameKeys],
-        entries: selectionEntries,
-        crns: selectedCrns,
-      });
-
-      if (failedFrames.length > 0) {
-        setError(
-          `Share link loaded with warnings: ${failedFrames.length} subject frame(s) failed to load. ${failedFrames.join(' | ')}`
-        );
-      }
-
-      setLoading(false);
-    }
-
-    void restoreFromSharePayload();
+    void restoreWorkspaceFromSharePayload(decoded.payload);
   }, []);
 
   useEffect(() => {
@@ -2165,7 +2258,69 @@ function App() {
       openPdfPreview({ pushHistory: false, clearError: false, force: true });
       setPendingShareRestorePreview(false);
     }
+    isShareRestoreInFlightRef.current = false;
   }, [pendingShareRestoreSelection, subjectFrames, courses, pendingShareRestorePreview]);
+
+  const shareFramesSignature = useMemo(
+    () =>
+      subjectFrames
+        .map((frame) => `${String(frame.termId || '').trim()}|${String(frame.campusId || '').trim()}|${normalizeSubjectIdValue(frame.subjectId)}`)
+        .join('||'),
+    [subjectFrames]
+  );
+  const shareSelectedCrnSignature = useMemo(
+    () =>
+      [...new Set(selectedCourses.flatMap((course) => normalizedCrnListForCourse(course).map((crn) => String(crn || '').trim())))]
+        .filter(Boolean)
+        .sort()
+        .join(','),
+    [selectedCourses]
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    if (isShareRestoreInFlightRef.current || loading || pendingShareRestoreSelection) {
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(() => {
+      const shareBaseUrl = `${window.location.origin}${window.location.pathname}`;
+      const currentUrl = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+      const maxLength = parseShareMaxUrlLength(window.__GW_SHARE_MAX_URL_LENGTH);
+
+      let nextUrl = currentUrl;
+      if (!canShare) {
+        nextUrl = buildUrlWithoutShareParams(window.location.search, shareBaseUrl);
+      } else {
+        const built = buildSharePayload();
+        if (built.payload) {
+          const builtUrl = buildShareUrlFromPayload(built.payload, window.location.search, shareBaseUrl, maxLength);
+          if (builtUrl.url && !builtUrl.error) {
+            nextUrl = builtUrl.url;
+          }
+        }
+      }
+
+      if (nextUrl === currentUrl || typeof window.history?.replaceState !== 'function') {
+        return;
+      }
+      window.history.replaceState(window.history.state, '', nextUrl);
+    }, SHARE_AUTO_SYNC_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timerId);
+  }, [
+    canShare,
+    shareFramesSignature,
+    shareSelectedCrnSignature,
+    showOnlySelected,
+    showCancelledCourses,
+    focusedDayCode,
+    isPdfPreviewOpen,
+    loading,
+    pendingShareRestoreSelection,
+  ]);
 
   function toggleCourse(id) {
     const course = courses.find((entry) => entry.id === id);
@@ -2657,6 +2812,115 @@ function App() {
 
       {subjectFrames.length > 0 ? (
         <main className="workspace">
+          <section className="tools-panel" aria-label="Tools">
+            <div className="tools-panel-header">
+              <h2>Tools</h2>
+              <div className="tools-panel-actions">
+                <div className="share-controls-panel" aria-label="Share controls">
+                  <div className="share-controls-top">
+                    <span className="share-controls-title">Share Link</span>
+                    <button
+                      type="button"
+                      className="view-toggle-button share-trigger-button"
+                      onClick={shareCurrentSelection}
+                      disabled={!canShare}
+                      aria-label="Copy share link"
+                    >
+                      <span className="share-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                          <circle cx="6" cy="12" r="2.4" />
+                          <circle cx="16.5" cy="6.5" r="2.4" />
+                          <circle cx="16.5" cy="17.5" r="2.4" />
+                          <path d="M8.1 10.9 14.4 7.6" />
+                          <path d="m8.1 13.1 6.3 3.3" />
+                        </svg>
+                      </span>
+                    </button>
+                  </div>
+                  <div className="share-options-row">
+                    <label className="share-option-toggle">
+                      <input
+                        type="checkbox"
+                        checked={shareIncludePreview}
+                        onChange={(event) => setShareIncludePreview(event.target.checked)}
+                        aria-label="Include print preview when sharing"
+                      />
+                      Share Print Preview
+                    </label>
+                  </div>
+                </div>
+                <div className="save-state-panel" aria-label="Save state controls">
+                  <div className="save-state-top">
+                    <span className="save-state-title">Save State</span>
+                    <button
+                      type="button"
+                      className="view-toggle-button save-state-trigger-button"
+                      onClick={saveCurrentStateToHistory}
+                      disabled={!canSaveState}
+                      aria-label="Save state to history"
+                      title="Save current workspace as a browser history checkpoint"
+                    >
+                      <span className="save-state-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                          <path d="M4 3h13l3 3v15H4z" />
+                          <path d="M8 3v6h8V3" />
+                          <rect x="8" y="14" width="8" height="5" rx="0.8" ry="0.8" />
+                        </svg>
+                      </span>
+                    </button>
+                  </div>
+                  <p className="save-state-note">
+                    Adds a browser history checkpoint.
+                  </p>
+                </div>
+                <div className="print-controls-panel" aria-label="Print controls">
+                  <div className="print-controls-top">
+                    <span className="print-controls-title">Print Options</span>
+                    <div className="print-controls-buttons">
+                      <button
+                        type="button"
+                        className="view-toggle-button print-preview-button"
+                        onClick={openPdfPreview}
+                        disabled={!canPrint}
+                        aria-label="Open print preview"
+                      >
+                        Preview
+                      </button>
+                      <button
+                        type="button"
+                        className="view-toggle-button print-trigger-button"
+                        onClick={openPrintView}
+                        disabled={!canPrint}
+                        aria-label="Print selected schedule"
+                      >
+                        Print
+                      </button>
+                    </div>
+                    <div className="print-options-row">
+                      <label className="print-option-toggle">
+                        <input
+                          type="checkbox"
+                          checked={printIncludeCalendar}
+                          onChange={(event) => setPrintIncludeCalendar(event.target.checked)}
+                          aria-label="Include calendar in print"
+                        />
+                        Calendar
+                      </label>
+                      <label className="print-option-toggle">
+                        <input
+                          type="checkbox"
+                          checked={printIncludeSelectedList}
+                          onChange={(event) => setPrintIncludeSelectedList(event.target.checked)}
+                          aria-label="Include selected course list in print"
+                        />
+                        Selected Course List
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
           <section className="course-panel">
             <div className="panel-header">
               <h2>
@@ -2841,85 +3105,15 @@ function App() {
                     ? `${displayedDays[0]?.label ?? 'Day'} Layout (${selectedCourses.length} selected)`
                     : `Weekly Layout (${selectedCourses.length} selected)`}
                 </h2>
-                <div className="calendar-header-actions">
-                  {effectiveFocusedDayCode ? (
-                    <button type="button" className="view-toggle-button" onClick={() => setFocusedDayCode(null)}>
-                      Week View
-                    </button>
-                  ) : null}
-                  <div className="share-controls-panel" aria-label="Share controls">
-                    <div className="share-controls-top">
-                      <span className="share-controls-title">Share Link</span>
-                      <button
-                        type="button"
-                        className="view-toggle-button share-trigger-button"
-                        onClick={shareCurrentSelection}
-                        disabled={!canShare}
-                        aria-label="Copy share link"
-                      >
-                        <span className="share-icon" aria-hidden="true">
-                          <svg viewBox="0 0 24 24" focusable="false">
-                            <circle cx="6" cy="12" r="2.4" />
-                            <circle cx="16.5" cy="6.5" r="2.4" />
-                            <circle cx="16.5" cy="17.5" r="2.4" />
-                            <path d="M8.1 10.9 14.4 7.6" />
-                            <path d="m8.1 13.1 6.3 3.3" />
-                          </svg>
-                        </span>
-                      </button>
-                    </div>
-                    {shareStatus ? (
-                      <p className={`share-status share-status-${shareStatus.kind}`}>{shareStatus.message}</p>
-                    ) : null}
-                  </div>
-                  <div className="print-controls-panel" aria-label="Print controls">
-                    <div className="print-controls-top">
-                      <span className="print-controls-title">Print Options</span>
-                      <div className="print-controls-buttons">
-                        <button
-                          type="button"
-                          className="view-toggle-button print-preview-button"
-                          onClick={openPdfPreview}
-                          disabled={!canPrint}
-                          aria-label="Open print preview"
-                        >
-                          Preview
-                        </button>
-                        <button
-                          type="button"
-                          className="view-toggle-button print-trigger-button"
-                          onClick={openPrintView}
-                          disabled={!canPrint}
-                          aria-label="Print selected schedule"
-                        >
-                          Print
-                        </button>
-                      </div>
-                    </div>
-                    <div className="print-options-row">
-                      <label className="print-option-toggle">
-                        <input
-                          type="checkbox"
-                          checked={printIncludeCalendar}
-                          onChange={(event) => setPrintIncludeCalendar(event.target.checked)}
-                          aria-label="Include calendar in print"
-                        />
-                        Calendar
-                      </label>
-                      <label className="print-option-toggle">
-                        <input
-                          type="checkbox"
-                          checked={printIncludeSelectedList}
-                          onChange={(event) => setPrintIncludeSelectedList(event.target.checked)}
-                          aria-label="Include selected course list in print"
-                        />
-                        Selected Course List
-                      </label>
-                    </div>
-                  </div>
-                </div>
+                {effectiveFocusedDayCode ? (
+                  <button type="button" className="view-toggle-button" onClick={() => setFocusedDayCode(null)}>
+                    Week View
+                  </button>
+                ) : null}
               </div>
-              <p>Events outlined in red overlap with at least one selected class. Click an event for details.</p>
+              <p>
+                Events outlined in red overlap with at least one selected class. Click an event for details.
+              </p>
             </div>
 
             <div className="calendar-shell">
@@ -3008,6 +3202,16 @@ function App() {
             </div>
           </section>
         </main>
+      ) : null}
+
+      {shareStatus ? (
+        <div
+          className={`share-toast share-toast-${shareStatus.kind}`}
+          role="status"
+          aria-live={shareStatus.kind === 'error' ? 'assertive' : 'polite'}
+        >
+          {shareStatus.message}
+        </div>
       ) : null}
 
       {subjectFrames.length > 0 ? (

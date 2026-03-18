@@ -223,6 +223,21 @@ const STEPS = [
     },
   },
   {
+    description: 'Share URL auto-sync updates location after selection',
+    run: async ({ page }) => {
+      await page.waitForFunction(
+        () => {
+          const params = new URLSearchParams(window.location.search);
+          return params.get('share_v') === '1' && params.get('share_t') && params.get('share_sel');
+        },
+        { timeout: 10000 }
+      );
+      const searchText = await page.evaluate(() => window.location.search || '');
+      assert(/share_v=1/.test(searchText), `Expected auto-synced share_v in URL, got "${searchText}".`);
+      assert(/share_sel=/.test(searchText), `Expected auto-synced share_sel in URL, got "${searchText}".`);
+    },
+  },
+  {
     description: 'Share button copies a readable query URL and restores state in a fresh tab',
     run: async ({ page, browser }) => {
       await page.getByLabel('Show only selected').check();
@@ -230,7 +245,19 @@ const STEPS = [
       await page.getByRole('button', { name: 'Mon' }).first().click();
       await page.getByRole('button', { name: 'Week View' }).waitFor({ timeout: 10000 });
 
-      const shareButton = page.getByRole('button', { name: 'Share' });
+      await page.waitForFunction(
+        () => {
+          const params = new URLSearchParams(window.location.search);
+          return (
+            params.get('share_only_sel') === '1' &&
+            params.get('share_show_cancel') === '1' &&
+            params.get('share_day') === 'M'
+          );
+        },
+        { timeout: 10000 }
+      );
+
+      const shareButton = page.getByRole('button', { name: 'Copy share link' });
       await shareButton.waitFor({ timeout: 10000 });
       assert(!(await shareButton.isDisabled()), 'Expected Share button to be enabled after selecting a class.');
 
@@ -275,6 +302,45 @@ const STEPS = [
     },
   },
   {
+    description: 'Save State pushes a history checkpoint and browser Back restores it',
+    run: async ({ page }) => {
+      const saveStateButton = page.getByRole('button', { name: 'Save State' });
+      await saveStateButton.waitFor({ timeout: 10000 });
+      assert(!(await saveStateButton.isDisabled()), 'Expected Save State button to be enabled after loading frames.');
+
+      const checkpointSearch = await page.evaluate(() => window.location.search || '');
+      await saveStateButton.click();
+      const saveStatus = page.locator('.share-status-success');
+      await saveStatus.waitFor({ timeout: 10000 });
+      const saveStatusText = (await saveStatus.textContent()) || '';
+      assert(/state saved/i.test(saveStatusText), `Expected save-state confirmation, got "${saveStatusText.trim()}".`);
+
+      const showOnlySelected = page.getByLabel('Show only selected');
+      await showOnlySelected.uncheck();
+      await page.waitForFunction(
+        () => new URLSearchParams(window.location.search).get('share_only_sel') === '0',
+        { timeout: 10000 }
+      );
+
+      await page.goBack();
+      await page.waitForFunction(
+        (expectedSearch) => window.location.search === expectedSearch,
+        checkpointSearch,
+        { timeout: 45000 }
+      );
+      await page.waitForFunction(
+        () => {
+          const labels = Array.from(document.querySelectorAll('label'));
+          const targetLabel = labels.find((label) => /show only selected/i.test(label.textContent || ''));
+          const checkbox = targetLabel ? targetLabel.querySelector('input[type="checkbox"]') : null;
+          return Boolean(checkbox && checkbox.checked);
+        },
+        { timeout: 45000 }
+      );
+      assert(await showOnlySelected.isChecked(), 'Expected Show only selected to be restored from saved history state.');
+    },
+  },
+  {
     description: 'Malformed share query shows an error and keeps the app responsive',
     run: async ({ browser, baseUrl }) => {
       const malformedContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -315,7 +381,7 @@ const STEPS = [
           previewResponse && previewResponse.ok(),
           `Expected HTTP 200 from preview share URL, got ${previewResponse?.status?.() ?? 'unknown'}.`
         );
-        await previewPage.locator('.workspace').waitFor({ timeout: 90000 });
+        await previewPage.locator('.app-shell').waitFor({ timeout: 90000 });
         await previewPage.locator('.pdf-preview-toolbar').waitFor({ timeout: 20000 });
         const toolbarText = (await previewPage.locator('.pdf-preview-toolbar').textContent()) || '';
         assert(/preview mode/i.test(toolbarText), `Expected preview toolbar text, got "${toolbarText.trim()}".`);
@@ -327,7 +393,7 @@ const STEPS = [
   {
     description: 'Share generation uses compressed fallback when readable query URL exceeds limit',
     run: async ({ page }) => {
-      await page.getByRole('button', { name: 'Share' }).click();
+      await page.getByRole('button', { name: 'Copy share link' }).click();
       await page.locator('.share-status-success').waitFor({ timeout: 10000 });
       const copiedReadableUrl = await page.evaluate(() => window.__gwClipboardText || '');
       assert(
@@ -376,7 +442,7 @@ const STEPS = [
         window.__GW_SHARE_MAX_URL_LENGTH = limit;
       }, fallbackLimit);
 
-      await page.getByRole('button', { name: 'Share' }).click();
+      await page.getByRole('button', { name: 'Copy share link' }).click();
       await page.waitForTimeout(500);
       const copiedAfterFallbackAttempt = await page.evaluate(() => window.__gwClipboardText || '');
       if (compressedShouldFit) {
@@ -400,7 +466,7 @@ const STEPS = [
       await page.evaluate(() => {
         window.__GW_SHARE_MAX_URL_LENGTH = 80;
       });
-      await page.getByRole('button', { name: 'Share' }).click();
+      await page.getByRole('button', { name: 'Copy share link' }).click();
       const status = page.locator('.share-status-error');
       await status.waitFor({ timeout: 10000 });
       const statusText = (await status.textContent()) || '';
@@ -538,6 +604,18 @@ const STEPS = [
       await page.getByRole('button', { name: 'Mon' }).first().click();
       await page.getByRole('button', { name: 'Week View' }).waitFor({ timeout: 10000 });
       await page.getByRole('button', { name: 'Week View' }).click();
+    },
+  },
+  {
+    description: 'Share URL auto-sync clears share params when selections are cleared',
+    run: async ({ page }) => {
+      await page.getByRole('button', { name: 'Clear' }).first().click();
+      await page.waitForFunction(
+        () => !new URLSearchParams(window.location.search).has('share_v'),
+        { timeout: 10000 }
+      );
+      const searchText = await page.evaluate(() => window.location.search || '');
+      assert(!/share_/.test(searchText), `Expected share params to be cleared, got "${searchText}".`);
     },
   },
   {
