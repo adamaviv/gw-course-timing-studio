@@ -11,7 +11,7 @@ runConfig:
 env:
   # Base release tag used for computed app versions (v<major>.<minor>-Build-<shortHash>).
   - variable: APP_VERSION_BASE_TAG
-    value: v0.2
+    value: v0.3
     availability:
       - BUILD
       - RUNTIME
