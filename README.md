@@ -52,6 +52,7 @@ See the full license text in [`LICENSE`](LICENSE).
   - print toggles for `Calendar` and `Selected Course List` (either or both)
   - prints selected weekly calendar first (when enabled)
   - then prints expanded selected-class details (modal-level information, when enabled)
+  - `Share` button copies a restore-ready URL using readable query params, with automatic compressed-query fallback when needed
 - Recent subjects (local storage):
   - quick re-load
   - pin/unpin
@@ -62,6 +63,10 @@ See the full license text in [`LICENSE`](LICENSE).
   - reload guidance + fallback recovery UI
 
 Print usage: select classes in the list, set `Calendar`/`Selected Course List` print toggles, then click `Print`.
+Share usage: select classes, then click `Share` to copy a restore-ready link.
+Share URL auto-sync: while classes are selected, the browser URL updates automatically to the current shareable state.
+Save State usage: click `Save State` to create a browser-history checkpoint, then use browser Back/Forward to return.
+Optional: add `share_preview=1` to a share URL to open directly in print preview mode.
 
 ## Parsing and Merge Behavior
 
