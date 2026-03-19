@@ -2,6 +2,11 @@ import { decompressFromEncodedURIComponent, compressToEncodedURIComponent } from
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 import { getRecoveryReloadHint } from '../shared/recoveryHints.js';
+import {
+  extractNormalizedCourseNumbers,
+  matchesParsedCourseSearchQuery,
+  parseCourseSearchQuery,
+} from './searchDsl.js';
 
 // Update these defaults each scheduling cycle.
 const DEFAULT_SELECTION = {
@@ -1035,6 +1040,7 @@ function App() {
   const [search, setSearch] = useState('');
   const [searchHistory, setSearchHistory] = useState([]);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [isSearchSyntaxOpen, setIsSearchSyntaxOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [subjectFrames, setSubjectFrames] = useState([]);
@@ -1190,6 +1196,19 @@ function App() {
     return () => window.clearTimeout(timerId);
   }, [shareStatus]);
 
+  useEffect(() => {
+    if (!isSearchSyntaxOpen) {
+      return undefined;
+    }
+    function handleKeydown(event) {
+      if (event.key === 'Escape') {
+        setIsSearchSyntaxOpen(false);
+      }
+    }
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  }, [isSearchSyntaxOpen]);
+
   const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
   const recoveryReloadHint = useMemo(() => getRecoveryReloadHint(), []);
   const orderedRecentSubjects = useMemo(() => {
@@ -1251,26 +1270,29 @@ function App() {
     setError('');
   }, [subjectFrames, termId]);
 
-  const filteredCourses = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) {
-      return courses;
-    }
+  const parsedSearchQuery = useMemo(() => parseCourseSearchQuery(search), [search]);
+  const filteredCourses = useMemo(
+    () =>
+      courses.filter((course) => {
+        const haystack = [
+          course.courseNumber,
+          course.section,
+          course.title,
+          course.instructor,
+          course.status,
+          summarizeMeetings(course),
+        ]
+          .join(' ')
+          .toLowerCase();
+        const courseNumbers = extractNormalizedCourseNumbers(course);
 
-    return courses.filter((course) => {
-      const haystack = [
-        course.courseNumber,
-        course.section,
-        course.title,
-        course.instructor,
-        course.status,
-        summarizeMeetings(course),
-      ]
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(term);
-    });
-  }, [courses, search]);
+        return matchesParsedCourseSearchQuery(parsedSearchQuery, {
+          haystack,
+          courseNumbers,
+        });
+      }),
+    [courses, parsedSearchQuery]
+  );
   const isSearchActive = search.trim().length > 0;
   const searchSuggestions = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -3254,78 +3276,90 @@ function App() {
 
             <div className="controls">
               <div className="search-input-wrap">
-                <input
-                  type="search"
-                  placeholder="Filter course number, title, instructor..."
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  onFocus={() => setIsSearchFocused(true)}
-                  onBlur={() => {
-                    window.setTimeout(() => setIsSearchFocused(false), 120);
-                    rememberSearchTerm(search);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
+                <div className="search-input-field">
+                  <input
+                    type="search"
+                    placeholder="Filter course number, title, instructor..."
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    onFocus={() => setIsSearchFocused(true)}
+                    onBlur={() => {
+                      window.setTimeout(() => setIsSearchFocused(false), 120);
                       rememberSearchTerm(search);
-                      setIsSearchFocused(false);
-                    }
-                  }}
-                />
-                {search ? (
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        rememberSearchTerm(search);
+                        setIsSearchFocused(false);
+                      }
+                    }}
+                  />
+                  {search ? (
+                    <button
+                      type="button"
+                      className="search-clear-button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        rememberSearchTerm(search);
+                        setSearch('');
+                        setIsSearchFocused(true);
+                      }}
+                      aria-label="Clear search field"
+                      title="Clear search"
+                    >
+                      x
+                    </button>
+                  ) : null}
+                  {showSearchSuggestions ? (
+                    <div className="search-suggestions" role="listbox" aria-label="Recent searches">
+                      {searchSuggestions.map((entry) => (
+                        <div
+                          className={`search-suggestion-row ${entry.pinned ? 'search-suggestion-row-pinned' : ''}`}
+                          key={`search-suggestion-${entry.query}`}
+                        >
+                          <button
+                            type="button"
+                            className="search-suggestion-item"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => applySearchSuggestion(entry)}
+                          >
+                            {entry.query}
+                          </button>
+                          <button
+                            type="button"
+                            className={`search-suggestion-pin ${entry.pinned ? 'search-suggestion-pin-active' : ''}`}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => togglePinSearchHistoryEntry(entry)}
+                            aria-label={`${entry.pinned ? 'Unpin' : 'Pin'} ${entry.query} in recent searches`}
+                            title={entry.pinned ? 'Unpin search' : 'Pin search'}
+                          >
+                            📌
+                          </button>
+                          <button
+                            type="button"
+                            className="search-suggestion-remove"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => removeSearchHistoryEntry(entry)}
+                            aria-label={`Remove ${entry.query} from recent searches`}
+                            title="Remove from recent searches"
+                          >
+                            x
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <p className="search-syntax-hint">
+                  Examples: <code>1*-4*</code>, <code>62+</code>, <code>&lt;3*</code>, <code>62* || 8*</code>.{' '}
                   <button
                     type="button"
-                    className="search-clear-button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      rememberSearchTerm(search);
-                      setSearch('');
-                      setIsSearchFocused(true);
-                    }}
-                    aria-label="Clear search field"
-                    title="Clear search"
+                    className="search-syntax-link-button"
+                    onClick={() => setIsSearchSyntaxOpen(true)}
                   >
-                    x
+                    Search Syntax
                   </button>
-                ) : null}
-                {showSearchSuggestions ? (
-                  <div className="search-suggestions" role="listbox" aria-label="Recent searches">
-                    {searchSuggestions.map((entry) => (
-                      <div
-                        className={`search-suggestion-row ${entry.pinned ? 'search-suggestion-row-pinned' : ''}`}
-                        key={`search-suggestion-${entry.query}`}
-                      >
-                        <button
-                          type="button"
-                          className="search-suggestion-item"
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => applySearchSuggestion(entry)}
-                        >
-                          {entry.query}
-                        </button>
-                        <button
-                          type="button"
-                          className={`search-suggestion-pin ${entry.pinned ? 'search-suggestion-pin-active' : ''}`}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => togglePinSearchHistoryEntry(entry)}
-                          aria-label={`${entry.pinned ? 'Unpin' : 'Pin'} ${entry.query} in recent searches`}
-                          title={entry.pinned ? 'Unpin search' : 'Pin search'}
-                        >
-                          📌
-                        </button>
-                        <button
-                          type="button"
-                          className="search-suggestion-remove"
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => removeSearchHistoryEntry(entry)}
-                          aria-label={`Remove ${entry.query} from recent searches`}
-                          title="Remove from recent searches"
-                        >
-                          x
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
+                </p>
               </div>
               <div className="buttons-row">
                 <button type="button" onClick={selectAllCourses}>
@@ -3780,6 +3814,89 @@ function App() {
             </section>
           ) : null}
         </section>
+      ) : null}
+
+      {isSearchSyntaxOpen ? (
+        <div className="search-syntax-overlay" role="presentation" onClick={() => setIsSearchSyntaxOpen(false)}>
+          <aside
+            className="search-syntax-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Search syntax help"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="search-syntax-dialog-header">
+              <h3>Search Syntax</h3>
+              <button
+                type="button"
+                className="detail-close-button"
+                aria-label="Close search syntax"
+                onClick={() => setIsSearchSyntaxOpen(false)}
+              >
+                X
+              </button>
+            </div>
+            <p>
+              Plain text search still works for course title, instructor, section, status, and meeting pattern.
+            </p>
+            <table className="search-syntax-table">
+              <thead>
+                <tr>
+                  <th>Pattern</th>
+                  <th>Meaning</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <code>6*</code>
+                  </td>
+                  <td>6xxx course numbers</td>
+                </tr>
+                <tr>
+                  <td>
+                    <code>62*</code>
+                  </td>
+                  <td>6200-6299</td>
+                </tr>
+                <tr>
+                  <td>
+                    <code>1*-4*</code>
+                  </td>
+                  <td>1000-4999 (undergraduate)</td>
+                </tr>
+                <tr>
+                  <td>
+                    <code>62+</code>
+                  </td>
+                  <td>6200 and above</td>
+                </tr>
+                <tr>
+                  <td>
+                    <code>&lt;3*</code>, <code>&lt;=3*</code>
+                  </td>
+                  <td>Below 3000, or including 3xxx</td>
+                </tr>
+                <tr>
+                  <td>
+                    <code>&gt;6*</code>, <code>&gt;=6*</code>
+                  </td>
+                  <td>Above 6xxx, or including 6xxx</td>
+                </tr>
+                <tr>
+                  <td>
+                    <code>62* || 8*</code>
+                  </td>
+                  <td>OR join. Spaces are AND within each clause.</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="search-syntax-note">
+              Course numbers with suffixes (for example <code>2401W</code>) are matched as the base four digits (
+              <code>2401</code>).
+            </p>
+          </aside>
+        </div>
       ) : null}
 
       {activeCourse ? (

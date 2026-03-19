@@ -21,6 +21,7 @@ See the full license text in [`LICENSE`](LICENSE).
 - Multi-subject loading in one term (supports mixing campuses in the same term).
 - Per-subject navigation frames with:
   - search/filter
+  - advanced query DSL (`1*-4*`, `62+`, `<3*`, `62* || 8*`)
   - select all / clear selections
   - removable subject frame
   - double-click collapse/expand
@@ -67,6 +68,7 @@ Share usage: select classes, then click `Share` to copy a restore-ready link.
 Share URL auto-sync: while classes are selected, the browser URL updates automatically to the current shareable state.
 Save State usage: click `Save State` to create a browser-history checkpoint, then use browser Back/Forward to return.
 Optional: add `share_preview=1` to a share URL to open directly in print preview mode.
+Search syntax reference: `/search-syntax.html` (also linked near the search field in-app).
 
 ## Parsing and Merge Behavior
 
@@ -132,10 +134,15 @@ Supported settings:
 - `npm run dev`: start app + API in development mode.
 - `npm run build`: build frontend assets.
 - `npm start`: start production server (expects `dist/` to exist).
+- `npm run test:search-dsl`: run unit-style tests for the advanced search DSL parser/matcher.
 - `npm test`: run dependency audit + all security phases (`test:security-phase1` ... `test:security-phase10`, `test:security-phase12`).
 - `npm run test:security-deps`: run production dependency audit gate (`npm audit --omit=dev --audit-level=high`).
-- `npm run test:usability`: run Playwright-based usability audit.
+- `npm run test:usability`: run search DSL tests + Playwright-based usability audit.
 - `node scripts/app-version.mjs`: print the computed UI version from git/env context.
+
+## Search DSL Implementation Note
+
+The advanced query search was implemented as a dedicated in-repo module (`src/searchDsl.js`) after evaluating parser libraries (including `logical-expression-parser`, `search-parser`, and `filtrex`). These packages did not fit the required level-aware wildcard semantics (for example `<3*`, `<=3*`, `62+`) without significant adaptation.
 
 ## Versioning
 

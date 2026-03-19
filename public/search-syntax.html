@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GW Course Studio Search Syntax</title>
+    <style>
+      :root {
+        --bg: #f3f7f9;
+        --panel: #ffffff;
+        --ink: #16303b;
+        --muted: #3f5f6d;
+        --line: #c7d7de;
+        --accent: #145477;
+      }
+      body {
+        margin: 0;
+        background: linear-gradient(170deg, #eef5f8, #f9fcfd);
+        color: var(--ink);
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      main {
+        max-width: 900px;
+        margin: 1.4rem auto 2rem;
+        padding: 0 1rem;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1rem 1.1rem;
+        box-shadow: 0 7px 18px rgba(14, 47, 61, 0.06);
+      }
+      h1 {
+        margin: 0 0 0.45rem;
+        font-size: 1.5rem;
+      }
+      h2 {
+        margin: 1rem 0 0.5rem;
+        font-size: 1.04rem;
+      }
+      p,
+      li {
+        color: var(--muted);
+        line-height: 1.45;
+        font-size: 0.95rem;
+      }
+      ul {
+        margin: 0.2rem 0 0.2rem 1.1rem;
+        padding: 0;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 0.4rem;
+        font-size: 0.92rem;
+      }
+      th,
+      td {
+        border: 1px solid var(--line);
+        text-align: left;
+        padding: 0.46rem 0.5rem;
+        vertical-align: top;
+      }
+      th {
+        background: #edf4f8;
+        color: #163d4f;
+      }
+      code {
+        background: #eef4f7;
+        border: 1px solid #d1dfe5;
+        border-radius: 6px;
+        padding: 0.08rem 0.3rem;
+        color: #12384a;
+        font-size: 0.9em;
+      }
+      .note {
+        margin-top: 0.65rem;
+        font-size: 0.88rem;
+      }
+      a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <h1>Search Syntax</h1>
+        <p>
+          GW Course Studio supports a regex-like search language for course-number filtering. Plain text search still
+          works for title, instructor, section, status, and meeting pattern.
+        </p>
+
+        <h2>Core Patterns</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Pattern</th>
+              <th>Meaning</th>
+              <th>Example</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>6*</code></td>
+              <td>Course numbers in the 6xxx band.</td>
+              <td>Graduate-level classes.</td>
+            </tr>
+            <tr>
+              <td><code>62*</code></td>
+              <td>Course numbers with prefix 62xx.</td>
+              <td>6200 through 6299.</td>
+            </tr>
+            <tr>
+              <td><code>1*-4*</code></td>
+              <td>Inclusive wildcard range from 1xxx to 4xxx.</td>
+              <td>Undergraduate classes.</td>
+            </tr>
+            <tr>
+              <td><code>62+</code></td>
+              <td>Course number greater than or equal to 6200.</td>
+              <td>6200 and above.</td>
+            </tr>
+            <tr>
+              <td><code>&lt;3*</code> / <code>&lt;=3*</code></td>
+              <td>Level-aware comparator on wildcard bands.</td>
+              <td><code>&lt;3*</code> means below 3000, <code>&lt;=3*</code> includes 3xxx.</td>
+            </tr>
+            <tr>
+              <td><code>&gt;6*</code> / <code>&gt;=6*</code></td>
+              <td>Level-aware comparator on wildcard bands.</td>
+              <td><code>&gt;6*</code> means 7000+, <code>&gt;=6*</code> includes 6xxx.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Boolean Join</h2>
+        <p>
+          Use <code>||</code> for OR. Spaces are AND within each side.
+          Example: <code>62* ai || 8*</code> means <code>(62* AND ai) OR 8*</code>.
+        </p>
+
+        <h2>Course Number Suffixes</h2>
+        <p>
+          Letter suffixes after 4-digit course numbers are ignored for numeric matching.
+          Example: <code>2401W</code> is treated as <code>2401</code>.
+        </p>
+
+        <p class="note">If a token is not recognized as DSL, it is treated as normal text search.</p>
+      </section>
+    </main>
+  </body>
+</html>
