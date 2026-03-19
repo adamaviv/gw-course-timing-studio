@@ -209,6 +209,31 @@ const STEPS = [
     },
   },
   {
+    description: 'Advanced search DSL handles wildcard/comparator/OR queries without breaking list rendering',
+    run: async ({ page }) => {
+      const searchInput = page.getByPlaceholder('Filter course number, title, instructor...');
+      await searchInput.waitFor({ timeout: 10000 });
+
+      const queries = ['1*-4*', '62+', '<3*', '62* || 8*'];
+      let sawAnyVisibleResult = false;
+
+      for (const query of queries) {
+        await searchInput.fill(query);
+        await page.waitForTimeout(250);
+        const inputValue = await searchInput.inputValue();
+        assert(inputValue === query, `Expected search input to keep query "${query}", got "${inputValue}".`);
+
+        const visibleRows = await page.locator('.course-item').count();
+        if (visibleRows > 0) {
+          sawAnyVisibleResult = true;
+        }
+      }
+
+      assert(sawAnyVisibleResult, 'Expected at least one DSL query to produce visible course rows.');
+      await searchInput.fill('');
+    },
+  },
+  {
     description: 'Selecting a class updates selected panel and calendar',
     run: async ({ page }) => {
       const firstSelectable = page.locator('.course-item input[type="checkbox"]:not([disabled])').first();
