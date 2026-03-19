@@ -125,13 +125,15 @@ Supported settings:
 - `API_RATE_LIMIT_PARSE_MAX`
 - `API_RATE_LIMIT_SUBJECTS_MAX`
 - `API_RATE_LIMIT_BUCKET_CAP`
+- `LOG_API_ERROR_DETAILS`
 
 ## Scripts
 
 - `npm run dev`: start app + API in development mode.
 - `npm run build`: build frontend assets.
 - `npm start`: start production server (expects `dist/` to exist).
-- `npm test`: run all security test phases (`test:security-phase1` ... `test:security-phase8`).
+- `npm test`: run dependency audit + all security phases (`test:security-phase1` ... `test:security-phase10`, `test:security-phase12`).
+- `npm run test:security-deps`: run production dependency audit gate (`npm audit --omit=dev --audit-level=high`).
 - `npm run test:usability`: run Playwright-based usability audit.
 - `node scripts/app-version.mjs`: print the computed UI version from git/env context.
 
@@ -155,7 +157,13 @@ Supported settings:
 ### Security Suite
 
 - Command: `npm test`
-- Coverage includes request validation, CORS/origin controls, rate limits, redirect handling, response redaction, and header hardening.
+- Coverage includes dependency audit, request validation, CORS/origin controls, rate limits, redirect handling, response redaction, parser error hardening, share payload abuse limits, and log redaction controls.
+- Requires Playwright Chromium (Phase 10 UI security checks):
+
+```bash
+npx playwright install chromium
+```
+
 - Security scripts exit non-zero on failure, so CI fails correctly.
 
 ### Usability Suite

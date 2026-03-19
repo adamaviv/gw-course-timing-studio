@@ -79,6 +79,11 @@ const SHARE_STATE_VERSION = 1;
 const MAX_SHARE_URL_LENGTH = 6000;
 const SHARE_STATUS_RESET_MS = 5000;
 const SHARE_AUTO_SYNC_DEBOUNCE_MS = 400;
+const MAX_SHARE_COMPRESSED_CHARS = 24_000;
+const MAX_SHARE_DECOMPRESSED_CHARS = 120_000;
+const MAX_SHARE_FRAME_COUNT = 24;
+const MAX_SHARE_SELECTION_ENTRIES = 1_200;
+const MAX_SHARE_CRN_COUNT = 4_000;
 
 function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -471,6 +476,9 @@ function parseAndValidateSharePayload(rawPayload) {
   if (!Array.isArray(rawPayload.f) || rawPayload.f.length === 0) {
     return { error: 'Share payload has no subject frames.' };
   }
+  if (rawPayload.f.length > MAX_SHARE_FRAME_COUNT) {
+    return { error: 'Share payload includes too many subject frames.' };
+  }
 
   const frameByKey = new Map();
   const frames = [];
@@ -487,6 +495,9 @@ function parseAndValidateSharePayload(rawPayload) {
     const normalizedFrame = { c: campusId, s: subjectId, fk: frameKey };
     frameByKey.set(frameKey, normalizedFrame);
     frames.push(normalizedFrame);
+    if (frames.length > MAX_SHARE_FRAME_COUNT) {
+      return { error: 'Share payload includes too many subject frames.' };
+    }
   }
 
   const validDayCodes = new Set(DAYS.map((entry) => entry.code));
@@ -503,6 +514,9 @@ function parseAndValidateSharePayload(rawPayload) {
   };
 
   const selInput = Array.isArray(rawPayload.sel) ? rawPayload.sel : [];
+  if (selInput.length > MAX_SHARE_SELECTION_ENTRIES) {
+    return { error: 'Share payload includes too many selection entries.' };
+  }
   const selection = [];
   for (const entry of selInput) {
     const frameKey = String(entry?.fk || '').trim();
@@ -523,6 +537,9 @@ function parseAndValidateSharePayload(rawPayload) {
       cr: normalizedCrns,
       k: `${frameKey}|${normalizedCrnListKey(normalizedCrns)}`,
     });
+    if (selection.length > MAX_SHARE_SELECTION_ENTRIES) {
+      return { error: 'Share payload includes too many selection entries.' };
+    }
   }
 
   const dedupedSelection = [];
@@ -536,6 +553,9 @@ function parseAndValidateSharePayload(rawPayload) {
   }
 
   const selectedCrnInput = Array.isArray(rawPayload.sc) ? rawPayload.sc : [];
+  if (selectedCrnInput.length > MAX_SHARE_CRN_COUNT) {
+    return { error: 'Share payload includes too many selected CRNs.' };
+  }
   const selectedCrns = [];
   for (const rawCrn of selectedCrnInput) {
     const crn = String(rawCrn || '').trim();
@@ -546,6 +566,9 @@ function parseAndValidateSharePayload(rawPayload) {
       return { error: 'Share payload has invalid selected class CRNs.' };
     }
     selectedCrns.push(crn);
+    if (selectedCrns.length > MAX_SHARE_CRN_COUNT) {
+      return { error: 'Share payload includes too many selected CRNs.' };
+    }
   }
   const dedupedSelectedCrns = [...new Set(selectedCrns)].sort();
 
@@ -602,6 +625,9 @@ function decodeCompressedSharePayload(compressedText) {
   if (!compressed) {
     return { error: 'Share link data is empty or invalid.' };
   }
+  if (compressed.length > MAX_SHARE_COMPRESSED_CHARS) {
+    return { error: 'Share link data is too large.' };
+  }
 
   let decompressed = '';
   try {
@@ -611,6 +637,9 @@ function decodeCompressedSharePayload(compressedText) {
   }
   if (!decompressed) {
     return { error: 'Share link data is empty or invalid.' };
+  }
+  if (decompressed.length > MAX_SHARE_DECOMPRESSED_CHARS) {
+    return { error: 'Share link data exceeds maximum allowed size.' };
   }
 
   let parsed;
@@ -651,6 +680,9 @@ function parseReadableSharePayload(searchParams) {
   if (frameTokens.length === 0) {
     return { error: 'Share payload has no subject frames.' };
   }
+  if (frameTokens.length > MAX_SHARE_FRAME_COUNT) {
+    return { error: 'Share payload includes too many subject frames.' };
+  }
 
   const frames = [];
   const frameKeySet = new Set();
@@ -671,6 +703,9 @@ function parseReadableSharePayload(searchParams) {
     .getAll(SHARE_QUERY_PARAM_SELECTION)
     .map((value) => String(value || '').trim())
     .filter(Boolean);
+  if (selectionTokens.length > MAX_SHARE_SELECTION_ENTRIES) {
+    return { error: 'Share payload includes too many selection entries.' };
+  }
   const selection = [];
   const selectedCrns = [];
   for (const token of selectionTokens) {
@@ -691,6 +726,9 @@ function parseReadableSharePayload(searchParams) {
       }
       selection.push({ fk: frameKey, cr: normalizedCrns });
       selectedCrns.push(...normalizedCrns);
+      if (selectedCrns.length > MAX_SHARE_CRN_COUNT) {
+        return { error: 'Share payload includes too many selected CRNs.' };
+      }
       continue;
     }
 
@@ -699,6 +737,9 @@ function parseReadableSharePayload(searchParams) {
       return { error: 'Share payload has invalid selected class CRNs.' };
     }
     selectedCrns.push(...normalizedCrns);
+    if (selectedCrns.length > MAX_SHARE_CRN_COUNT) {
+      return { error: 'Share payload includes too many selected CRNs.' };
+    }
   }
 
   const dayText = String(searchParams.get(SHARE_QUERY_PARAM_DAY) || '')

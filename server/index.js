@@ -104,6 +104,7 @@ const TRUST_PROXY = parseTrustProxy(process.env.TRUST_PROXY);
 const REQUEST_ID_HEADER_NAME = 'x-request-id';
 const REQUEST_ID_MAX_LENGTH = 128;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const LOG_API_ERROR_DETAILS = parseBooleanFlag(process.env.LOG_API_ERROR_DETAILS, !IS_PRODUCTION);
 
 const app = express();
 app.disable('x-powered-by');
@@ -116,6 +117,7 @@ app.use(helmet(buildHelmetOptions()));
 app.use(cors(corsOptionsDelegate));
 app.use('/api', enforceApiOriginAllowlist);
 app.use(express.json({ limit: '1mb' }));
+app.use('/api', handleApiBodyParserErrors);
 
 class UpstreamTimeoutError extends Error {}
 class UpstreamResponseTooLargeError extends Error {}
@@ -126,6 +128,21 @@ function parsePositiveInt(rawValue, fallback) {
     return fallback;
   }
   return parsed;
+}
+
+function parseBooleanFlag(rawValue, fallback = false) {
+  const text = String(rawValue ?? '').trim();
+  if (!text) {
+    return fallback;
+  }
+  const normalized = text.toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 function parseTrustProxy(rawValue) {
@@ -205,6 +222,22 @@ function sendJsonError(req, res, statusCode, errorMessage) {
   return res.status(statusCode).json(buildJsonErrorBody(req, res, errorMessage));
 }
 
+function handleApiBodyParserErrors(error, req, res, next) {
+  if (!error) {
+    return next();
+  }
+
+  if (error?.type === 'entity.parse.failed') {
+    return sendJsonError(req, res, 400, 'Malformed JSON request body.');
+  }
+
+  if (error?.type === 'entity.too.large') {
+    return sendJsonError(req, res, 413, 'Request body exceeds the 1mb JSON limit.');
+  }
+
+  return next(error);
+}
+
 function unknownServerErrorMessage(error) {
   if (IS_PRODUCTION) {
     return 'Internal server error.';
@@ -214,10 +247,21 @@ function unknownServerErrorMessage(error) {
 
 function serializeErrorForLog(error) {
   if (error instanceof Error) {
+    if (!LOG_API_ERROR_DETAILS) {
+      return {
+        name: error.name || 'Error',
+        message: 'redacted',
+      };
+    }
     return {
       name: error.name,
       message: error.message,
       stack: error.stack,
+    };
+  }
+  if (!LOG_API_ERROR_DETAILS) {
+    return {
+      message: 'redacted',
     };
   }
   return {
