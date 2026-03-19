@@ -45,6 +45,8 @@ const DAYS = [
 ];
 const RECENT_SUBJECTS_STORAGE_KEY = 'gw-course-studio-recent-subjects-v1';
 const MAX_RECENT_SUBJECTS = 12;
+const SEARCH_HISTORY_STORAGE_KEY = 'gw-course-studio-search-history-v1';
+const MAX_SEARCH_HISTORY = 50;
 const PRINT_PAGE_HEIGHT_IN = 11;
 const PRINT_PAGE_MARGIN_TOP_IN = 0.5;
 const PRINT_PAGE_MARGIN_BOTTOM_IN = 0.5;
@@ -133,6 +135,73 @@ function sanitizeRecentSubjects(rawEntries) {
     );
   const ordered = [...partitioned.pinned, ...partitioned.unpinned];
   return ordered.slice(0, MAX_RECENT_SUBJECTS);
+}
+
+function sanitizeSearchHistory(rawEntries) {
+  if (!Array.isArray(rawEntries)) {
+    return [];
+  }
+
+  function normalizeSearchQuery(rawValue) {
+    return String(rawValue ?? '')
+      .trim()
+      .replace(/\s+/g, ' ');
+  }
+
+  function normalizeSearchTimestamp(rawValue) {
+    const parsedTime = Date.parse(String(rawValue ?? ''));
+    if (Number.isNaN(parsedTime)) {
+      return 0;
+    }
+    return parsedTime;
+  }
+
+  function compareSearchHistoryEntries(left, right) {
+    if (left.pinned !== right.pinned) {
+      return left.pinned ? -1 : 1;
+    }
+    const leftTime = normalizeSearchTimestamp(left.lastUsedAt);
+    const rightTime = normalizeSearchTimestamp(right.lastUsedAt);
+    if (rightTime !== leftTime) {
+      return rightTime - leftTime;
+    }
+    return left.query.localeCompare(right.query);
+  }
+
+  const entriesByQuery = new Map();
+  for (const rawEntry of rawEntries) {
+    const value = normalizeSearchQuery(rawEntry?.query ?? rawEntry?.value ?? rawEntry ?? '');
+    if (value.length < 2 || value.length > 80) {
+      continue;
+    }
+
+    const normalizedKey = value.toLowerCase();
+    const normalizedTime = normalizeSearchTimestamp(rawEntry?.lastUsedAt);
+    const normalizedEntry = {
+      query: value,
+      pinned: Boolean(rawEntry?.pinned),
+      lastUsedAt: new Date(normalizedTime).toISOString(),
+    };
+
+    const existing = entriesByQuery.get(normalizedKey);
+    if (!existing) {
+      entriesByQuery.set(normalizedKey, normalizedEntry);
+      continue;
+    }
+
+    const existingTime = normalizeSearchTimestamp(existing.lastUsedAt);
+    const nextTime = Math.max(existingTime, normalizedTime);
+    entriesByQuery.set(normalizedKey, {
+      query: existing.query || normalizedEntry.query,
+      pinned: existing.pinned || normalizedEntry.pinned,
+      lastUsedAt: new Date(nextTime).toISOString(),
+    });
+  }
+
+  const history = [...entriesByQuery.values()];
+  history.sort(compareSearchHistoryEntries);
+
+  return history.slice(0, MAX_SEARCH_HISTORY);
 }
 
 function buildScheduleUrl(campusId, termId, subjectId) {
@@ -923,6 +992,8 @@ function App() {
   const [subjectOptionsLoading, setSubjectOptionsLoading] = useState(false);
   const [subjectOptionsError, setSubjectOptionsError] = useState('');
   const [search, setSearch] = useState('');
+  const [searchHistory, setSearchHistory] = useState([]);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [subjectFrames, setSubjectFrames] = useState([]);
@@ -1034,6 +1105,18 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(SEARCH_HISTORY_STORAGE_KEY) || '[]');
+      setSearchHistory(sanitizeSearchHistory(parsed));
+    } catch {
+      setSearchHistory([]);
+    }
+  }, []);
+
+  useEffect(() => {
     if (typeof window === 'undefined' || !recentSubjectsLoaded) {
       return;
     }
@@ -1044,6 +1127,17 @@ function App() {
       setError('Saved browser data could not be updated. Clear local storage to continue.');
     }
   }, [recentSubjects, recentSubjectsLoaded]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(searchHistory));
+    } catch {
+      // Ignore search-history storage write failures; core app remains usable.
+    }
+  }, [searchHistory]);
 
   useEffect(() => {
     if (!shareStatus) {
@@ -1137,6 +1231,30 @@ function App() {
     });
   }, [courses, search]);
   const isSearchActive = search.trim().length > 0;
+  const searchSuggestions = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) {
+      return searchHistory;
+    }
+
+    const startsWith = [];
+    const includes = [];
+    for (const entry of searchHistory) {
+      const value = String(entry?.query || '')
+        .trim()
+        .toLowerCase();
+      if (value === term) {
+        continue;
+      }
+      if (value.startsWith(term)) {
+        startsWith.push(entry);
+      } else if (value.includes(term)) {
+        includes.push(entry);
+      }
+    }
+    return [...startsWith, ...includes];
+  }, [search, searchHistory]);
+  const showSearchSuggestions = isSearchFocused && searchSuggestions.length > 0;
 
   const linkedChildrenByParentId = useMemo(() => {
     const mapping = new Map();
@@ -2322,6 +2440,129 @@ function App() {
     pendingShareRestoreSelection,
   ]);
 
+  function rememberSearchTerm(rawValue) {
+    const normalizedValue = String(rawValue ?? '')
+      .trim()
+      .replace(/\s+/g, ' ');
+    if (normalizedValue.length < 2) {
+      return;
+    }
+
+    setSearchHistory((prev) => {
+      const normalizedKey = normalizedValue.toLowerCase();
+      const nowIso = new Date().toISOString();
+      const remaining = [];
+      let existingPinned = false;
+
+      for (const entry of prev) {
+        const query = String(entry?.query || '')
+          .trim()
+          .replace(/\s+/g, ' ');
+        if (!query) {
+          continue;
+        }
+        if (query.toLowerCase() === normalizedKey) {
+          existingPinned = existingPinned || Boolean(entry?.pinned);
+          continue;
+        }
+        remaining.push({
+          query,
+          pinned: Boolean(entry?.pinned),
+          lastUsedAt: String(entry?.lastUsedAt || ''),
+        });
+      }
+
+      const next = [
+        { query: normalizedValue, pinned: existingPinned, lastUsedAt: nowIso },
+        ...remaining,
+      ];
+      next.sort((left, right) => {
+        if (left.pinned !== right.pinned) {
+          return left.pinned ? -1 : 1;
+        }
+        const leftTime = Date.parse(String(left.lastUsedAt || ''));
+        const rightTime = Date.parse(String(right.lastUsedAt || ''));
+        const normalizedLeft = Number.isNaN(leftTime) ? 0 : leftTime;
+        const normalizedRight = Number.isNaN(rightTime) ? 0 : rightTime;
+        if (normalizedRight !== normalizedLeft) {
+          return normalizedRight - normalizedLeft;
+        }
+        return String(left.query || '').localeCompare(String(right.query || ''));
+      });
+      return next.slice(0, MAX_SEARCH_HISTORY);
+    });
+  }
+
+  function applySearchSuggestion(value) {
+    const normalizedValue = String(value?.query ?? value ?? '')
+      .trim()
+      .replace(/\s+/g, ' ');
+    if (!normalizedValue) {
+      return;
+    }
+    setSearch(normalizedValue);
+    rememberSearchTerm(normalizedValue);
+    setIsSearchFocused(false);
+  }
+
+  function removeSearchHistoryEntry(valueToRemove) {
+    const normalizedValue = String(valueToRemove?.query ?? valueToRemove ?? '')
+      .trim()
+      .toLowerCase();
+    if (!normalizedValue) {
+      return;
+    }
+    setSearchHistory((prev) =>
+      prev.filter(
+        (entry) =>
+          String(entry?.query || '')
+            .trim()
+            .toLowerCase() !== normalizedValue
+      )
+    );
+  }
+
+  function togglePinSearchHistoryEntry(valueToToggle) {
+    const normalizedValue = String(valueToToggle?.query ?? valueToToggle ?? '')
+      .trim()
+      .toLowerCase();
+    if (!normalizedValue) {
+      return;
+    }
+    setSearchHistory((prev) => {
+      const next = prev.map((entry) => {
+        const query = String(entry?.query || '')
+          .trim()
+          .replace(/\s+/g, ' ');
+        if (!query) {
+          return null;
+        }
+        const currentPinned = Boolean(entry?.pinned);
+        const currentTime = String(entry?.lastUsedAt || '');
+        if (query.toLowerCase() !== normalizedValue) {
+          return { query, pinned: currentPinned, lastUsedAt: currentTime };
+        }
+        return { query, pinned: !currentPinned, lastUsedAt: currentTime };
+      });
+
+      const compacted = next.filter(Boolean);
+      compacted.sort((left, right) => {
+        if (left.pinned !== right.pinned) {
+          return left.pinned ? -1 : 1;
+        }
+        const leftTime = Date.parse(String(left.lastUsedAt || ''));
+        const rightTime = Date.parse(String(right.lastUsedAt || ''));
+        const normalizedLeft = Number.isNaN(leftTime) ? 0 : leftTime;
+        const normalizedRight = Number.isNaN(rightTime) ? 0 : rightTime;
+        if (normalizedRight !== normalizedLeft) {
+          return normalizedRight - normalizedLeft;
+        }
+        return String(left.query || '').localeCompare(String(right.query || ''));
+      });
+      return compacted.slice(0, MAX_SEARCH_HISTORY);
+    });
+  }
+
   function toggleCourse(id) {
     const course = courses.find((entry) => entry.id === id);
     if (!isSchedulableCourse(course)) {
@@ -2354,6 +2595,17 @@ function App() {
   }
 
   function selectAllCourses() {
+    if (isSearchActive) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        visibleListCourses
+          .filter((course) => isSchedulableCourse(course))
+          .forEach((course) => next.add(course.id));
+        return next;
+      });
+      return;
+    }
+
     setSelectedIds(
       new Set(courses.filter((course) => course.relationType !== 'linked' && isSchedulableCourse(course)).map((course) => course.id))
     );
@@ -2389,11 +2641,19 @@ function App() {
     });
   }
 
-  function selectAllInFrame(frameKey) {
+  function selectAllInFrame(frameKey, visibleRows = null) {
+    const visibleIds = visibleRows
+      ? new Set(
+          visibleRows
+            .map((row) => row?.course?.id)
+            .filter(Boolean)
+        )
+      : null;
     setSelectedIds((prev) => {
       const next = new Set(prev);
       courses
         .filter((course) => course.frameKey === frameKey && isSchedulableCourse(course))
+        .filter((course) => (visibleIds ? visibleIds.has(course.id) : true))
         .forEach((course) => next.add(course.id));
       return next;
     });
@@ -2413,17 +2673,28 @@ function App() {
   }
 
   function toggleSelectAllInFrame(frame) {
-    const schedulableCount = frame.courses.filter((course) => isSchedulableCourse(course)).length;
+    const selectableCourses = isSearchActive
+      ? [...new Map((frame.rows ?? []).map((row) => [row.course.id, row.course])).values()].filter((course) =>
+          isSchedulableCourse(course)
+        )
+      : frame.courses.filter((course) => isSchedulableCourse(course));
+    const schedulableCount = selectableCourses.length;
     if (schedulableCount === 0) {
       return;
     }
-    const selectedCount = frame.courses.filter(
-      (course) => isSchedulableCourse(course) && selectedIds.has(course.id)
-    ).length;
+    const selectedCount = selectableCourses.filter((course) => selectedIds.has(course.id)).length;
     if (selectedCount === schedulableCount) {
-      clearFrameSelection(frame.key);
+      if (isSearchActive) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          selectableCourses.forEach((course) => next.delete(course.id));
+          return next;
+        });
+      } else {
+        clearFrameSelection(frame.key);
+      }
     } else {
-      selectAllInFrame(frame.key);
+      selectAllInFrame(frame.key, isSearchActive ? frame.rows : null);
     }
   }
 
@@ -2941,12 +3212,80 @@ function App() {
             </div>
 
             <div className="controls">
-              <input
-                type="search"
-                placeholder="Filter course number, title, instructor..."
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
+              <div className="search-input-wrap">
+                <input
+                  type="search"
+                  placeholder="Filter course number, title, instructor..."
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  onFocus={() => setIsSearchFocused(true)}
+                  onBlur={() => {
+                    window.setTimeout(() => setIsSearchFocused(false), 120);
+                    rememberSearchTerm(search);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      rememberSearchTerm(search);
+                      setIsSearchFocused(false);
+                    }
+                  }}
+                />
+                {search ? (
+                  <button
+                    type="button"
+                    className="search-clear-button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      rememberSearchTerm(search);
+                      setSearch('');
+                      setIsSearchFocused(true);
+                    }}
+                    aria-label="Clear search field"
+                    title="Clear search"
+                  >
+                    x
+                  </button>
+                ) : null}
+                {showSearchSuggestions ? (
+                  <div className="search-suggestions" role="listbox" aria-label="Recent searches">
+                    {searchSuggestions.map((entry) => (
+                      <div
+                        className={`search-suggestion-row ${entry.pinned ? 'search-suggestion-row-pinned' : ''}`}
+                        key={`search-suggestion-${entry.query}`}
+                      >
+                        <button
+                          type="button"
+                          className="search-suggestion-item"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applySearchSuggestion(entry)}
+                        >
+                          {entry.query}
+                        </button>
+                        <button
+                          type="button"
+                          className={`search-suggestion-pin ${entry.pinned ? 'search-suggestion-pin-active' : ''}`}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => togglePinSearchHistoryEntry(entry)}
+                          aria-label={`${entry.pinned ? 'Unpin' : 'Pin'} ${entry.query} in recent searches`}
+                          title={entry.pinned ? 'Unpin search' : 'Pin search'}
+                        >
+                          📌
+                        </button>
+                        <button
+                          type="button"
+                          className="search-suggestion-remove"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => removeSearchHistoryEntry(entry)}
+                          aria-label={`Remove ${entry.query} from recent searches`}
+                          title="Remove from recent searches"
+                        >
+                          x
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               <div className="buttons-row">
                 <button type="button" onClick={selectAllCourses}>
                   Select All
