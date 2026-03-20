@@ -685,11 +685,24 @@ button:disabled {
   align-items: center;
   gap: 0.4rem;
   flex-wrap: wrap;
+  justify-content: space-between;
 }
 
 .subject-frame-count {
   font-size: 0.8rem;
   color: #2f4a54;
+}
+
+.subject-frame-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.79rem;
+  color: #23414b;
+}
+
+.subject-frame-toggle input[type='checkbox'] {
+  margin: 0;
 }
 
 .subject-frame .course-list {
@@ -778,6 +791,23 @@ button:disabled {
   display: flex;
   justify-content: flex-end;
   gap: 0.35rem;
+  align-items: center;
+}
+
+.course-action-button {
+  margin-left: 0;
+}
+
+.linked-selection-toggle {
+  min-width: 9.2rem;
+  text-align: center;
+}
+
+.linked-selection-toggle:disabled {
+  background: #e8eef1;
+  border-color: #c7d3d8;
+  color: #738994;
+  cursor: not-allowed;
 }
 
 .course-swatch {

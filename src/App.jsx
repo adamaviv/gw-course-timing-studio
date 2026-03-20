@@ -1048,6 +1048,7 @@ function App() {
   const [showOnlySelected, setShowOnlySelected] = useState(false);
   const [showCancelledCourses, setShowCancelledCourses] = useState(false);
   const [expandedLinkedParentIds, setExpandedLinkedParentIds] = useState(() => new Set());
+  const [alwaysSelectLinkedFrameKeys, setAlwaysSelectLinkedFrameKeys] = useState(() => new Set());
   const [collapsedFrameKeys, setCollapsedFrameKeys] = useState(() => new Set());
   const [recentSubjects, setRecentSubjects] = useState([]);
   const [recentSubjectsLoaded, setRecentSubjectsLoaded] = useState(false);
@@ -1264,6 +1265,7 @@ function App() {
     setSubjectFrames([]);
     setSelectedIds(new Set());
     setExpandedLinkedParentIds(new Set());
+    setAlwaysSelectLinkedFrameKeys(new Set());
     setCollapsedFrameKeys(new Set());
     setIsSelectedFrameCollapsed(true);
     closeCourseDetails();
@@ -2187,6 +2189,7 @@ function App() {
       setSubjectFrames([]);
       setSelectedIds(new Set());
       setExpandedLinkedParentIds(new Set());
+      setAlwaysSelectLinkedFrameKeys(new Set());
       setCollapsedFrameKeys(new Set());
       setIsSelectedFrameCollapsed(true);
       closeCourseDetails();
@@ -2295,6 +2298,7 @@ function App() {
     setSubjectFrames([]);
     setSelectedIds(new Set());
     setExpandedLinkedParentIds(new Set());
+    setAlwaysSelectLinkedFrameKeys(new Set());
     setCollapsedFrameKeys(new Set());
     setIsSelectedFrameCollapsed(true);
     setIsPdfPreviewOpen(false);
@@ -2632,12 +2636,25 @@ function App() {
       return;
     }
 
+    const frameKey = String(course.frameKey || '');
+    const shouldAutoSelectLinked = alwaysSelectLinkedFrameKeys.has(frameKey);
+    const linkedSchedulableChildren =
+      course.relationType !== 'linked'
+        ? (linkedChildrenByParentId.get(course.id) ?? []).filter((entry) => isSchedulableCourse(entry))
+        : [];
+
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
+        if (shouldAutoSelectLinked) {
+          linkedSchedulableChildren.forEach((entry) => next.delete(entry.id));
+        }
       } else {
         next.add(id);
+        if (shouldAutoSelectLinked) {
+          linkedSchedulableChildren.forEach((entry) => next.add(entry.id));
+        }
       }
       return next;
     });
@@ -2818,8 +2835,52 @@ function App() {
       }
       return next;
     });
+    setAlwaysSelectLinkedFrameKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(frameKey);
+      return next;
+    });
     setActiveCourseId((prev) => (prev && String(prev).startsWith(framePrefix) ? null : prev));
     setDetailPosition(null);
+  }
+
+  function setAlwaysSelectLinkedInFrame(frameKey, enabled) {
+    const normalizedFrameKey = String(frameKey || '').trim();
+    if (!normalizedFrameKey) {
+      return;
+    }
+
+    setAlwaysSelectLinkedFrameKeys((prev) => {
+      const next = new Set(prev);
+      if (enabled) {
+        next.add(normalizedFrameKey);
+      } else {
+        next.delete(normalizedFrameKey);
+      }
+      return next;
+    });
+
+    if (!enabled) {
+      return;
+    }
+
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const selectedParentCourses = courses.filter(
+        (course) =>
+          String(course.frameKey || '').trim() === normalizedFrameKey &&
+          course.relationType !== 'linked' &&
+          isSchedulableCourse(course) &&
+          prev.has(course.id)
+      );
+      for (const parentCourse of selectedParentCourses) {
+        const linkedCourses = linkedChildrenByParentId.get(parentCourse.id) ?? [];
+        linkedCourses
+          .filter((linkedCourse) => isSchedulableCourse(linkedCourse))
+          .forEach((linkedCourse) => next.add(linkedCourse.id));
+      }
+      return next;
+    });
   }
 
   function renderCourseRow(row, options = {}) {
@@ -2832,6 +2893,10 @@ function App() {
       (linkedCourse) => isSchedulableCourse(linkedCourse) && selectedIds.has(linkedCourse.id)
     ).length;
     const linkedSelectedCount = linkedCourses.filter((linkedCourse) => selectedIds.has(linkedCourse.id)).length;
+    const allLinkedSchedulableSelected =
+      linkedSchedulableCount > 0 && linkedSchedulableSelectedCount === linkedSchedulableCount;
+    const canToggleLinkedSelection = linkedSchedulableCount > 0 || linkedSelectedCount > 0;
+    const frameAlwaysSelectLinkedEnabled = alwaysSelectLinkedFrameKeys.has(String(course.frameKey || ''));
     const linkedParentId = row.isLinked ? linkedParentIdByChildId.get(course.id) : null;
     const linkedParentCourse = linkedParentId ? courseById.get(linkedParentId) ?? null : null;
     const linkedParentLabel = linkedParentCourse
@@ -2910,33 +2975,23 @@ function App() {
               <>
                 <button
                   type="button"
-                  className="course-info-link"
+                  className="course-info-link course-action-button linked-selection-toggle"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    selectLinkedForParent(course.id);
+                    if (allLinkedSchedulableSelected || (linkedSchedulableCount === 0 && linkedSelectedCount > 0)) {
+                      unselectLinkedForParent(course.id);
+                    } else {
+                      selectLinkedForParent(course.id);
+                    }
                   }}
-                  disabled={
-                    linkedSchedulableCount === 0 || linkedSchedulableSelectedCount === linkedSchedulableCount
-                  }
+                  disabled={!canToggleLinkedSelection || frameAlwaysSelectLinkedEnabled}
                 >
-                  Select Linked
+                  {allLinkedSchedulableSelected ? 'Unselect Linked' : 'Select Linked'}
                 </button>
                 <button
                   type="button"
-                  className="course-info-link"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    unselectLinkedForParent(course.id);
-                  }}
-                  disabled={linkedSelectedCount === 0}
-                >
-                  Unselect Linked
-                </button>
-                <button
-                  type="button"
-                  className="course-info-link"
+                  className="course-info-link course-action-button"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -3444,6 +3499,7 @@ function App() {
                   (course) => isSchedulableCourse(course) && selectedIds.has(course.id)
                 ).length;
                 const frameAllSelected = frameSchedulableCount > 0 && frameSelectedCount === frameSchedulableCount;
+                const alwaysSelectLinkedEnabled = alwaysSelectLinkedFrameKeys.has(frame.key);
 
                 return (
                 <section
@@ -3503,6 +3559,14 @@ function App() {
                         <span className="subject-frame-count">
                           {frameSelectedCount} selected
                         </span>
+                        <label className="subject-frame-toggle">
+                          <input
+                            type="checkbox"
+                            checked={alwaysSelectLinkedEnabled}
+                            onChange={(event) => setAlwaysSelectLinkedInFrame(frame.key, event.target.checked)}
+                          />
+                          Always Select Linked
+                        </label>
                       </div>
 
                       <div className="course-list">
