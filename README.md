@@ -189,6 +189,7 @@ npx playwright install chromium
   - `USABILITY_TERM_ID`
   - `USABILITY_SUBJECT_ID`
   - `USABILITY_SCREENSHOT_PATH`
+  - `USABILITY_USE_MOCK_GW` (`1` by default in CI usability workflow; set to `0` to hit live GW upstream)
 
 ## CI Workflows
 

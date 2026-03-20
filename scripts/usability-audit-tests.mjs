@@ -29,6 +29,178 @@ const AUDIT_CONFIG = {
   screenshotPath: process.env.USABILITY_SCREENSHOT_PATH || '/tmp/usability-audit-failure.png',
 };
 const RECENT_SUBJECTS_STORAGE_KEY = 'gw-course-studio-recent-subjects-v1';
+const USE_MOCK_GW_API = process.env.USABILITY_USE_MOCK_GW !== '0';
+const CAMPUS_LABELS = {
+  '1': 'Main Campus',
+  '2': 'Virginia Science & Technology Campus',
+  '3': 'Off Campus',
+  '4': 'Mount Vernon Campus',
+  '6': "CCAS Dean's Seminars",
+  '7': 'Online Courses',
+  '8': 'Corcoran School of the Arts and Design',
+};
+const TERM_LABELS = {
+  '202601': "Spring '26",
+  '202602': "Summer '26",
+  '202603': "Fall '26",
+  '202701': "Spring '27",
+  '202702': "Summer '27",
+};
+const SUBJECT_OPTIONS = [
+  { id: 'CSCI', name: 'Computer Science' },
+  { id: 'ECE', name: 'Electrical and Computer Engineering' },
+  { id: 'MATH', name: 'Mathematics' },
+];
+const MOCK_COURSES_BY_SUBJECT = {
+  CSCI: [
+    {
+      id: 'row-1',
+      status: 'OPEN',
+      crn: '54172',
+      courseNumber: 'CSCI 1012',
+      subject: 'CSCI',
+      numeric: 1012,
+      section: '10',
+      title: 'Introduction to Programming with Python',
+      normalizedTitle: 'introduction to programming with python',
+      credits: '3.00',
+      instructor: 'Taylor, J',
+      room: 'ROME 195',
+      dayTimeRaw: 'M 03:45PM - 05:00PM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [
+        { day: 'M', dayName: 'Monday', startMin: 945, endMin: 1020, startLabel: '3:45 PM', endLabel: '5:00 PM' },
+      ],
+      meetingSignature: 'M:945-1020',
+      relationType: 'primary',
+      linkedParentCrn: '',
+      detailUrl: '',
+      scheduleDetails: [],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'CSCI 1012', instructor: 'Taylor, J' }],
+      titleDetails: [{ courseNumber: 'CSCI 1012', title: 'Introduction to Programming with Python' }],
+      registrationDetails: [{ courseNumber: 'CSCI 1012', sections: ['10'], crns: ['54172'] }],
+    },
+    {
+      id: 'row-2',
+      status: 'OPEN',
+      crn: '54500',
+      courseNumber: 'CSCI 2401W',
+      subject: 'CSCI',
+      numeric: 2401,
+      section: '11',
+      title: 'Data Structures',
+      normalizedTitle: 'data structures',
+      credits: '3.00',
+      instructor: 'Goldfrank, J',
+      room: 'SEH 101',
+      dayTimeRaw: 'TR 10:00AM - 11:15AM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [
+        { day: 'T', dayName: 'Tuesday', startMin: 600, endMin: 675, startLabel: '10:00 AM', endLabel: '11:15 AM' },
+        { day: 'R', dayName: 'Thursday', startMin: 600, endMin: 675, startLabel: '10:00 AM', endLabel: '11:15 AM' },
+      ],
+      meetingSignature: 'TR:600-675',
+      relationType: 'primary',
+      linkedParentCrn: '',
+      detailUrl: '',
+      scheduleDetails: [],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'CSCI 2401W', instructor: 'Goldfrank, J' }],
+      titleDetails: [{ courseNumber: 'CSCI 2401W', title: 'Data Structures' }],
+      registrationDetails: [{ courseNumber: 'CSCI 2401W', sections: ['11'], crns: ['54500'] }],
+    },
+    {
+      id: 'row-3',
+      status: 'OPEN',
+      crn: '53525',
+      courseNumber: 'CSCI 6212',
+      subject: 'CSCI',
+      numeric: 6212,
+      section: '20',
+      title: 'Machine Learning',
+      normalizedTitle: 'machine learning',
+      credits: '3.00',
+      instructor: 'Aviv, A',
+      room: 'SEH 110',
+      dayTimeRaw: 'MW 02:00PM - 03:15PM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [
+        { day: 'M', dayName: 'Monday', startMin: 840, endMin: 915, startLabel: '2:00 PM', endLabel: '3:15 PM' },
+        { day: 'W', dayName: 'Wednesday', startMin: 840, endMin: 915, startLabel: '2:00 PM', endLabel: '3:15 PM' },
+      ],
+      meetingSignature: 'MW:840-915',
+      relationType: 'primary',
+      linkedParentCrn: '',
+      detailUrl: '',
+      scheduleDetails: [],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'CSCI 6212', instructor: 'Aviv, A' }],
+      titleDetails: [{ courseNumber: 'CSCI 6212', title: 'Machine Learning' }],
+      registrationDetails: [{ courseNumber: 'CSCI 6212', sections: ['20'], crns: ['53525'] }],
+    },
+    {
+      id: 'row-4',
+      status: 'OPEN',
+      crn: '54880',
+      courseNumber: 'CSCI 8210',
+      subject: 'CSCI',
+      numeric: 8210,
+      section: '01',
+      title: 'Doctoral Research Methods',
+      normalizedTitle: 'doctoral research methods',
+      credits: '3.00',
+      instructor: 'Smith, P',
+      room: 'SEH B122',
+      dayTimeRaw: 'F 11:00AM - 01:00PM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [
+        { day: 'F', dayName: 'Friday', startMin: 660, endMin: 780, startLabel: '11:00 AM', endLabel: '1:00 PM' },
+      ],
+      meetingSignature: 'F:660-780',
+      relationType: 'primary',
+      linkedParentCrn: '',
+      detailUrl: '',
+      scheduleDetails: [],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'CSCI 8210', instructor: 'Smith, P' }],
+      titleDetails: [{ courseNumber: 'CSCI 8210', title: 'Doctoral Research Methods' }],
+      registrationDetails: [{ courseNumber: 'CSCI 8210', sections: ['01'], crns: ['54880'] }],
+    },
+  ],
+  ECE: [
+    {
+      id: 'row-ece-1',
+      status: 'OPEN',
+      crn: '53706',
+      courseNumber: 'ECE 6210',
+      subject: 'ECE',
+      numeric: 6210,
+      section: '10',
+      title: 'Advanced Embedded Systems',
+      normalizedTitle: 'advanced embedded systems',
+      credits: '3.00',
+      instructor: 'Kim, S',
+      room: 'SEH 202',
+      dayTimeRaw: 'TR 06:10PM - 07:25PM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [
+        { day: 'T', dayName: 'Tuesday', startMin: 1090, endMin: 1165, startLabel: '6:10 PM', endLabel: '7:25 PM' },
+        { day: 'R', dayName: 'Thursday', startMin: 1090, endMin: 1165, startLabel: '6:10 PM', endLabel: '7:25 PM' },
+      ],
+      meetingSignature: 'TR:1090-1165',
+      relationType: 'primary',
+      linkedParentCrn: '',
+      detailUrl: '',
+      scheduleDetails: [],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'ECE 6210', instructor: 'Kim, S' }],
+      titleDetails: [{ courseNumber: 'ECE 6210', title: 'Advanced Embedded Systems' }],
+      registrationDetails: [{ courseNumber: 'ECE 6210', sections: ['10'], crns: ['53706'] }],
+    },
+  ],
+  MATH: [],
+};
 let lastSharedUrl = '';
 
 function assert(condition, message) {
@@ -75,6 +247,132 @@ async function waitForServerReady(baseUrl, timeoutMs = 45000) {
   throw new Error(`Server at ${baseUrl} did not become ready within ${timeoutMs}ms.`);
 }
 
+function termLabelForId(termId) {
+  return TERM_LABELS[String(termId || '').trim()] || `Term ${String(termId || '').trim()}`;
+}
+
+function campusLabelForId(campusId) {
+  return CAMPUS_LABELS[String(campusId || '').trim()] || `Campus ${String(campusId || '').trim()}`;
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function parseSubjectFromScheduleUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    const campusId = String(parsed.searchParams.get('campId') || '').trim() || '1';
+    const termId = String(parsed.searchParams.get('termId') || '').trim() || '202601';
+    const subjectId = String(parsed.searchParams.get('subjId') || '')
+      .trim()
+      .toUpperCase();
+    return { campusId, termId, subjectId };
+  } catch {
+    return { campusId: '1', termId: '202601', subjectId: '' };
+  }
+}
+
+function mockSubjectsResponse(campusId, termId) {
+  return {
+    meta: {
+      sourceUrl: `https://my.gwu.edu/mod/pws/subjects.cfm?campId=${encodeURIComponent(campusId)}&termId=${encodeURIComponent(termId)}`,
+      campId: campusId,
+      campusLabel: campusLabelForId(campusId),
+      termId,
+      termLabel: termLabelForId(termId),
+      subjectCount: SUBJECT_OPTIONS.length,
+      generatedAt: new Date().toISOString(),
+    },
+    subjects: SUBJECT_OPTIONS.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      label: `${entry.id} - ${entry.name}`,
+    })),
+  };
+}
+
+function mockParseResponse(campusId, termId, subjectId) {
+  const normalizedSubject = String(subjectId || '').trim().toUpperCase();
+  const courses = deepClone(MOCK_COURSES_BY_SUBJECT[normalizedSubject] || []);
+  if (courses.length === 0) {
+    return null;
+  }
+  return {
+    meta: {
+      sourceUrl: `https://my.gwu.edu/mod/pws/print.cfm?campId=${encodeURIComponent(campusId)}&termId=${encodeURIComponent(termId)}&subjId=${encodeURIComponent(normalizedSubject)}`,
+      termLabel: termLabelForId(termId),
+      subjectLabel: normalizedSubject,
+      campusId: campusId,
+      campusLabel: campusLabelForId(campusId),
+      parsedCourseCount: courses.length,
+      rawRowCount: courses.length,
+      generatedAt: new Date().toISOString(),
+    },
+    courses: courses.map((course) => ({
+      ...course,
+      sourceUrl: `https://my.gwu.edu/mod/pws/print.cfm?campId=${encodeURIComponent(campusId)}&termId=${encodeURIComponent(termId)}&subjId=${encodeURIComponent(normalizedSubject)}`,
+      termLabel: termLabelForId(termId),
+    })),
+  };
+}
+
+async function attachMockApiRoutes(context) {
+  if (!USE_MOCK_GW_API) {
+    return;
+  }
+
+  await context.route('**/api/subjects**', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const campusId = String(requestUrl.searchParams.get('campId') || '1').trim();
+    const termId = String(requestUrl.searchParams.get('termId') || '202601').trim();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(mockSubjectsResponse(campusId, termId)),
+    });
+  });
+
+  await context.route('**/api/parse-url', async (route) => {
+    let payload = {};
+    try {
+      payload = JSON.parse(route.request().postData() || '{}');
+    } catch {
+      await route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Invalid JSON body.' }),
+      });
+      return;
+    }
+
+    const { campusId, termId, subjectId } = parseSubjectFromScheduleUrl(payload.url);
+    const parsed = mockParseResponse(campusId, termId, subjectId);
+    if (!parsed) {
+      await route.fulfill({
+        status: 422,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: `No classes are currently published for ${subjectId || 'this subject'}.`,
+        }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(parsed),
+    });
+  });
+}
+
+async function createAuditedContext(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await attachMockApiRoutes(context);
+  return context;
+}
+
 async function runStep(step, context, failures) {
   try {
     await step.run(context);
@@ -87,8 +385,8 @@ async function runStep(step, context, failures) {
   }
 }
 
-async function assertStorageRecoveryScenario({ browser, baseUrl, initScript }) {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+async function assertStorageRecoveryScenario({ createContext, baseUrl, initScript }) {
+  const context = await createContext();
   const page = await context.newPage();
 
   try {
@@ -122,9 +420,9 @@ async function assertStorageRecoveryScenario({ browser, baseUrl, initScript }) {
 const STEPS = [
   {
     description: 'Storage recovery button appears for mangled or out-of-sync local storage and clears state',
-    run: async ({ browser, baseUrl }) => {
+    run: async ({ createContext, baseUrl }) => {
       await assertStorageRecoveryScenario({
-        browser,
+        createContext,
         baseUrl,
         initScript: (storageKey) => {
           window.localStorage.removeItem(storageKey);
@@ -133,7 +431,7 @@ const STEPS = [
       });
 
       await assertStorageRecoveryScenario({
-        browser,
+        createContext,
         baseUrl,
         initScript: (storageKey) => {
           window.localStorage.setItem(storageKey, '[]');
@@ -264,7 +562,7 @@ const STEPS = [
   },
   {
     description: 'Share button copies a readable query URL and restores state in a fresh tab',
-    run: async ({ page, browser }) => {
+    run: async ({ page, createContext }) => {
       await page.getByLabel('Show only selected').check();
       await page.getByLabel('Show cancelled').check();
       await page.getByRole('button', { name: 'Mon' }).first().click();
@@ -294,7 +592,7 @@ const STEPS = [
       assert(!sharedUrl.includes('%40'), `Expected simplified CRN-only share_sel encoding, got "${sharedUrl}".`);
       lastSharedUrl = sharedUrl;
 
-      const restoredContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+      const restoredContext = await createContext();
       const restoredPage = await restoredContext.newPage();
       try {
         const restoredResponse = await restoredPage.goto(sharedUrl, {
@@ -367,8 +665,8 @@ const STEPS = [
   },
   {
     description: 'Malformed share query shows an error and keeps the app responsive',
-    run: async ({ browser, baseUrl }) => {
-      const malformedContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    run: async ({ createContext, baseUrl }) => {
+      const malformedContext = await createContext();
       const malformedPage = await malformedContext.newPage();
       try {
         const malformedResponse = await malformedPage.goto(`${baseUrl}/?share_z=not-valid`, {
@@ -390,12 +688,12 @@ const STEPS = [
   },
   {
     description: 'Share URL with preview flag opens PDF preview mode after restore',
-    run: async ({ browser }) => {
+    run: async ({ createContext }) => {
       assert(lastSharedUrl && lastSharedUrl.includes('share_v='), 'Expected a readable copied share URL from prior step.');
       const previewUrl = new URL(lastSharedUrl);
       previewUrl.searchParams.set('share_preview', '1');
 
-      const previewContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+      const previewContext = await createContext();
       const previewPage = await previewContext.newPage();
       try {
         const previewResponse = await previewPage.goto(previewUrl.toString(), {
@@ -511,7 +809,7 @@ const STEPS = [
   },
   {
     description: 'Partial share restore warns but still loads available frames',
-    run: async ({ browser, baseUrl }) => {
+    run: async ({ createContext, baseUrl }) => {
       assert(lastSharedUrl && lastSharedUrl.includes('share_v='), 'Expected a readable copied share URL from prior step.');
       const copiedUrl = new URL(lastSharedUrl);
       const selectedCrn = copiedUrl.searchParams
@@ -538,7 +836,7 @@ const STEPS = [
       const encoded = compressToEncodedURIComponent(JSON.stringify(partialPayload));
       const partialUrl = `${baseUrl}/?share_z=${encoded}`;
 
-      const partialContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+      const partialContext = await createContext();
       const partialPage = await partialContext.newPage();
       try {
         const partialResponse = await partialPage.goto(partialUrl, {
@@ -656,6 +954,8 @@ async function run() {
   const failures = [];
   let browser;
   let page;
+  const createContext = async () => createAuditedContext(browser);
+  console.log(`INFO Usability API mode: ${USE_MOCK_GW_API ? 'mocked' : 'live'}`);
 
   try {
     let baseUrl = AUDIT_CONFIG.baseUrl;
@@ -669,7 +969,7 @@ async function run() {
     }
 
     browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const context = await createContext();
     page = await context.newPage();
     page.baseUrl = baseUrl;
     await page.addInitScript(() => {
@@ -709,7 +1009,7 @@ async function run() {
     });
 
     for (const step of STEPS) {
-      await runStep(step, { page, browser, baseUrl }, failures);
+      await runStep(step, { page, browser, baseUrl, createContext }, failures);
       if (failures.length > 0) {
         break;
       }
