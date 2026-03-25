@@ -2,6 +2,7 @@ import { decompressFromEncodedURIComponent, compressToEncodedURIComponent } from
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 import { getRecoveryReloadHint } from '../shared/recoveryHints.js';
+import { buildCourseWarnings } from './courseWarnings.js';
 import {
   extractNormalizedCourseNumbers,
   matchesParsedCourseSearchQuery,
@@ -52,6 +53,8 @@ const RECENT_SUBJECTS_STORAGE_KEY = 'gw-course-studio-recent-subjects-v1';
 const MAX_RECENT_SUBJECTS = 12;
 const SEARCH_HISTORY_STORAGE_KEY = 'gw-course-studio-search-history-v1';
 const MAX_SEARCH_HISTORY = 50;
+const DISMISSED_WARNINGS_STORAGE_KEY = 'gw-course-studio-dismissed-warnings-v1';
+const MAX_DISMISSED_WARNING_IDS = 5000;
 const PRINT_PAGE_HEIGHT_IN = 11;
 const PRINT_PAGE_MARGIN_TOP_IN = 0.5;
 const PRINT_PAGE_MARGIN_BOTTOM_IN = 0.5;
@@ -212,6 +215,24 @@ function sanitizeSearchHistory(rawEntries) {
   history.sort(compareSearchHistoryEntries);
 
   return history.slice(0, MAX_SEARCH_HISTORY);
+}
+
+function sanitizeDismissedWarningIds(rawEntries) {
+  if (!Array.isArray(rawEntries)) {
+    return [];
+  }
+  const normalized = [];
+  for (const rawValue of rawEntries) {
+    const value = String(rawValue ?? '').trim();
+    if (!value) {
+      continue;
+    }
+    normalized.push(value);
+    if (normalized.length >= MAX_DISMISSED_WARNING_IDS) {
+      break;
+    }
+  }
+  return [...new Set(normalized)];
 }
 
 function buildScheduleUrl(campusId, termId, subjectId) {
@@ -1047,16 +1068,20 @@ function App() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [showOnlySelected, setShowOnlySelected] = useState(false);
   const [showCancelledCourses, setShowCancelledCourses] = useState(false);
+  const [showWarningsOnly, setShowWarningsOnly] = useState(false);
+  const [warningTypeFilter, setWarningTypeFilter] = useState('');
   const [expandedLinkedParentIds, setExpandedLinkedParentIds] = useState(() => new Set());
   const [alwaysSelectLinkedFrameKeys, setAlwaysSelectLinkedFrameKeys] = useState(() => new Set());
   const [collapsedFrameKeys, setCollapsedFrameKeys] = useState(() => new Set());
   const [recentSubjects, setRecentSubjects] = useState([]);
+  const [dismissedWarningIds, setDismissedWarningIds] = useState(() => new Set());
   const [recentSubjectsLoaded, setRecentSubjectsLoaded] = useState(false);
   const [storageRecoveryNeeded, setStorageRecoveryNeeded] = useState(false);
   const [draggedPinnedKey, setDraggedPinnedKey] = useState(null);
   const [dragOverPinnedKey, setDragOverPinnedKey] = useState(null);
   const [isSelectedFrameCollapsed, setIsSelectedFrameCollapsed] = useState(true);
   const [activeCourseId, setActiveCourseId] = useState(null);
+  const [warningDialogCourseId, setWarningDialogCourseId] = useState(null);
   const [detailPosition, setDetailPosition] = useState(null);
   const [focusedDayCode, setFocusedDayCode] = useState(null);
   const [printGeneratedAt, setPrintGeneratedAt] = useState('');
@@ -1165,6 +1190,18 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(DISMISSED_WARNINGS_STORAGE_KEY) || '[]');
+      setDismissedWarningIds(new Set(sanitizeDismissedWarningIds(parsed)));
+    } catch {
+      setDismissedWarningIds(new Set());
+    }
+  }, []);
+
+  useEffect(() => {
     if (typeof window === 'undefined' || !recentSubjectsLoaded) {
       return;
     }
@@ -1188,6 +1225,20 @@ function App() {
   }, [searchHistory]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        DISMISSED_WARNINGS_STORAGE_KEY,
+        JSON.stringify([...dismissedWarningIds].slice(0, MAX_DISMISSED_WARNING_IDS))
+      );
+    } catch {
+      // Ignore warning-dismissal storage write failures; warnings still render.
+    }
+  }, [dismissedWarningIds]);
+
+  useEffect(() => {
     if (!shareStatus) {
       return undefined;
     }
@@ -1209,6 +1260,19 @@ function App() {
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);
   }, [isSearchSyntaxOpen]);
+
+  useEffect(() => {
+    if (!warningDialogCourseId) {
+      return undefined;
+    }
+    function handleKeydown(event) {
+      if (event.key === 'Escape') {
+        closeWarningDialog();
+      }
+    }
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  }, [warningDialogCourseId]);
 
   const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
   const recoveryReloadHint = useMemo(() => getRecoveryReloadHint(), []);
@@ -1251,6 +1315,7 @@ function App() {
       return next;
     });
     setActiveCourseId((prev) => (prev && validIds.has(prev) ? prev : null));
+    setWarningDialogCourseId((prev) => (prev && validIds.has(prev) ? prev : null));
   }, [courses]);
 
   useEffect(() => {
@@ -1373,6 +1438,62 @@ function App() {
     return mapping;
   }, [linkedChildrenByParentId]);
 
+  const computedWarningsByCourseId = useMemo(() => buildCourseWarnings(courses), [courses]);
+  const courseWarningsById = useMemo(() => {
+    const mapping = new Map();
+    for (const [courseId, warnings] of computedWarningsByCourseId.entries()) {
+      mapping.set(
+        courseId,
+        (warnings ?? []).map((warning) => ({
+          ...warning,
+          dismissed: dismissedWarningIds.has(warning.id),
+        }))
+      );
+    }
+    return mapping;
+  }, [computedWarningsByCourseId, dismissedWarningIds]);
+  const warningTypeOptions = useMemo(() => {
+    const byCode = new Map();
+    for (const warnings of courseWarningsById.values()) {
+      for (const warning of warnings ?? []) {
+        const code = String(warning?.code || '').trim();
+        const title = String(warning?.title || '').trim();
+        if (!code || !title) {
+          continue;
+        }
+        if (!byCode.has(code)) {
+          byCode.set(code, title);
+        }
+      }
+    }
+    return [...byCode.entries()]
+      .map(([code, title]) => ({ code, title }))
+      .sort((left, right) => left.title.localeCompare(right.title));
+  }, [courseWarningsById]);
+  const warningFilteredCourseIds = useMemo(() => {
+    const filtered = new Set();
+    for (const [courseId, warnings] of courseWarningsById.entries()) {
+      const entries = warnings ?? [];
+      if (entries.length === 0) {
+        continue;
+      }
+      if (!warningTypeFilter || entries.some((warning) => warning.code === warningTypeFilter)) {
+        filtered.add(courseId);
+      }
+    }
+    return filtered;
+  }, [courseWarningsById, warningTypeFilter]);
+
+  useEffect(() => {
+    if (!warningTypeFilter) {
+      return;
+    }
+    if (warningTypeOptions.some((option) => option.code === warningTypeFilter)) {
+      return;
+    }
+    setWarningTypeFilter('');
+  }, [warningTypeFilter, warningTypeOptions]);
+
   const primaryListCourses = useMemo(
     () =>
       filteredCourses.filter(
@@ -1386,13 +1507,20 @@ function App() {
     for (const course of primaryListCourses) {
       const linkedChildren = linkedChildrenByParentId.get(course.id) ?? [];
       const showLinked = expandedLinkedParentIds.has(course.id);
+      const primaryHasWarning = warningFilteredCourseIds.has(course.id);
       const visibleLinkedChildren = showOnlySelected
         ? linkedChildren.filter((linkedCourse) => selectedIds.has(linkedCourse.id))
         : linkedChildren;
+      const warningFilteredChildren = showWarningsOnly
+        ? visibleLinkedChildren.filter((linkedCourse) => warningFilteredCourseIds.has(linkedCourse.id))
+        : visibleLinkedChildren;
       const showPrimary =
         !showOnlySelected ||
         (isSchedulableCourse(course) && selectedIds.has(course.id)) ||
-        (showLinked && visibleLinkedChildren.length > 0);
+        (showLinked && warningFilteredChildren.length > 0);
+      if (showWarningsOnly && !primaryHasWarning && warningFilteredChildren.length === 0) {
+        continue;
+      }
       if (!showPrimary) {
         continue;
       }
@@ -1405,7 +1533,7 @@ function App() {
       });
 
       if (showLinked) {
-        for (const linkedCourse of visibleLinkedChildren) {
+        for (const linkedCourse of warningFilteredChildren) {
           rows.push({
             course: linkedCourse,
             isLinked: true,
@@ -1417,7 +1545,15 @@ function App() {
       }
     }
     return rows;
-  }, [primaryListCourses, linkedChildrenByParentId, expandedLinkedParentIds, showOnlySelected, selectedIds]);
+  }, [
+    primaryListCourses,
+    linkedChildrenByParentId,
+    expandedLinkedParentIds,
+    showOnlySelected,
+    selectedIds,
+    showWarningsOnly,
+    warningFilteredCourseIds,
+  ]);
 
   const listRowsByFrame = useMemo(() => {
     const grouped = new Map();
@@ -1560,6 +1696,18 @@ function App() {
   const isActiveCourseSelected = useMemo(
     () => Boolean(activeCourse && selectedIds.has(activeCourse.id)),
     [activeCourse, selectedIds]
+  );
+  const activeCourseWarnings = useMemo(
+    () => (activeCourse ? courseWarningsById.get(activeCourse.id) ?? [] : []),
+    [activeCourse, courseWarningsById]
+  );
+  const warningDialogCourse = useMemo(
+    () => courses.find((course) => course.id === warningDialogCourseId) ?? null,
+    [courses, warningDialogCourseId]
+  );
+  const warningDialogCourseWarnings = useMemo(
+    () => (warningDialogCourse ? courseWarningsById.get(warningDialogCourse.id) ?? [] : []),
+    [warningDialogCourse, courseWarningsById]
   );
   const activeCourseDetailUrl = activeCourse ? sanitizeDetailUrl(activeCourse.detailUrl) : '';
   const activeCourseCampusLabel = activeCourse ? courseCampusLabel(activeCourse) : '';
@@ -1720,6 +1868,10 @@ function App() {
     setDetailPosition(null);
   }
 
+  function closeWarningDialog() {
+    setWarningDialogCourseId(null);
+  }
+
   function unselectActiveCourseFromModal() {
     if (!activeCourseId) {
       return;
@@ -1733,8 +1885,13 @@ function App() {
   }
 
   function openCourseDetails(courseId, anchorElement) {
+    closeWarningDialog();
     setActiveCourseId(courseId);
     setDetailPosition(calculateDetailPosition(anchorElement?.getBoundingClientRect?.() ?? null));
+  }
+
+  function openWarningDialog(courseId) {
+    setWarningDialogCourseId(courseId);
   }
 
   function recordRecentSubject(entry) {
@@ -1827,6 +1984,7 @@ function App() {
     }
 
     setRecentSubjects([]);
+    setDismissedWarningIds(new Set());
     setStorageRecoveryNeeded(false);
     setDraggedPinnedKey(null);
     setDragOverPinnedKey(null);
@@ -2630,6 +2788,36 @@ function App() {
     });
   }
 
+  function dismissCourseWarning(warningId) {
+    const normalized = String(warningId || '').trim();
+    if (!normalized) {
+      return;
+    }
+    setDismissedWarningIds((prev) => {
+      if (prev.has(normalized)) {
+        return prev;
+      }
+      const next = new Set(prev);
+      next.add(normalized);
+      return next;
+    });
+  }
+
+  function restoreCourseWarning(warningId) {
+    const normalized = String(warningId || '').trim();
+    if (!normalized) {
+      return;
+    }
+    setDismissedWarningIds((prev) => {
+      if (!prev.has(normalized)) {
+        return prev;
+      }
+      const next = new Set(prev);
+      next.delete(normalized);
+      return next;
+    });
+  }
+
   function toggleCourse(id) {
     const course = courses.find((entry) => entry.id === id);
     if (!isSchedulableCourse(course)) {
@@ -2721,24 +2909,6 @@ function App() {
     });
   }
 
-  function selectAllInFrame(frameKey, visibleRows = null) {
-    const visibleIds = visibleRows
-      ? new Set(
-          visibleRows
-            .map((row) => row?.course?.id)
-            .filter(Boolean)
-        )
-      : null;
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      courses
-        .filter((course) => course.frameKey === frameKey && isSchedulableCourse(course))
-        .filter((course) => (visibleIds ? visibleIds.has(course.id) : true))
-        .forEach((course) => next.add(course.id));
-      return next;
-    });
-  }
-
   function clearFrameSelection(frameKey) {
     const framePrefix = `${frameKey}:`;
     setSelectedIds((prev) => {
@@ -2752,29 +2922,34 @@ function App() {
     });
   }
 
+  function selectableCoursesForFrame(frame) {
+    if (isSearchActive || showWarningsOnly) {
+      return [...new Map((frame.rows ?? []).map((row) => [row.course.id, row.course])).values()]
+        .filter((course) => isSchedulableCourse(course))
+        .filter((course) => (showWarningsOnly ? warningFilteredCourseIds.has(course.id) : true));
+    }
+    return (frame.courses ?? []).filter((course) => isSchedulableCourse(course));
+  }
+
   function toggleSelectAllInFrame(frame) {
-    const selectableCourses = isSearchActive
-      ? [...new Map((frame.rows ?? []).map((row) => [row.course.id, row.course])).values()].filter((course) =>
-          isSchedulableCourse(course)
-        )
-      : frame.courses.filter((course) => isSchedulableCourse(course));
+    const selectableCourses = selectableCoursesForFrame(frame);
     const schedulableCount = selectableCourses.length;
     if (schedulableCount === 0) {
       return;
     }
     const selectedCount = selectableCourses.filter((course) => selectedIds.has(course.id)).length;
     if (selectedCount === schedulableCount) {
-      if (isSearchActive) {
-        setSelectedIds((prev) => {
-          const next = new Set(prev);
-          selectableCourses.forEach((course) => next.delete(course.id));
-          return next;
-        });
-      } else {
-        clearFrameSelection(frame.key);
-      }
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        selectableCourses.forEach((course) => next.delete(course.id));
+        return next;
+      });
     } else {
-      selectAllInFrame(frame.key, isSearchActive ? frame.rows : null);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        selectableCourses.forEach((course) => next.add(course.id));
+        return next;
+      });
     }
   }
 
@@ -2887,6 +3062,31 @@ function App() {
     const { showLinkedToggle = true } = options;
     const course = row.course;
     const courseCancelled = isCancelledCourse(course);
+    const courseWarnings = courseWarningsById.get(course.id) ?? [];
+    const activeWarningCount = courseWarnings.filter((warning) => !warning.dismissed).length;
+    const dismissedWarningCount = courseWarnings.length - activeWarningCount;
+    const activeWarningTypes = [
+      ...new Set(
+        courseWarnings
+          .filter((warning) => !warning.dismissed)
+          .map((warning) => String(warning?.title || '').trim())
+          .filter(Boolean)
+      ),
+    ];
+    const dismissedWarningTypes = [
+      ...new Set(
+        courseWarnings
+          .filter((warning) => warning.dismissed)
+          .map((warning) => String(warning?.title || '').trim())
+          .filter(Boolean)
+      ),
+    ];
+    const activeWarningTooltip = activeWarningTypes.length
+      ? `Warning type${activeWarningTypes.length === 1 ? '' : 's'}: ${activeWarningTypes.join(' | ')}`
+      : `${activeWarningCount} active warning${activeWarningCount === 1 ? '' : 's'}`;
+    const dismissedWarningTooltip = dismissedWarningTypes.length
+      ? `Dismissed warning type${dismissedWarningTypes.length === 1 ? '' : 's'}: ${dismissedWarningTypes.join(' | ')}`
+      : `${dismissedWarningCount} dismissed warning${dismissedWarningCount === 1 ? '' : 's'}`;
     const linkedCourses = !row.isLinked ? linkedChildrenByParentId.get(course.id) ?? [] : [];
     const linkedSchedulableCount = linkedCourses.filter((linkedCourse) => isSchedulableCourse(linkedCourse)).length;
     const linkedSchedulableSelectedCount = linkedCourses.filter(
@@ -2914,6 +3114,15 @@ function App() {
       .includes('(lab)')
       ? 'Linked Section (Lab)'
       : 'Linked Section';
+    const openWarningsFromBadge = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openWarningDialog(course.id);
+    };
+    const suppressLabelSelectionFromBadge = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
 
     return (
       <label
@@ -2946,6 +3155,30 @@ function App() {
             />
             <span className="course-code">{course.courseNumber}</span>
             {course.section ? <span className="course-section">Sec {course.section}</span> : null}
+            {activeWarningCount > 0 ? (
+              <button
+                type="button"
+                className="course-warning-badge course-warning-badge-button"
+                title={activeWarningTooltip}
+                aria-label={`Open ${activeWarningCount} active warning${activeWarningCount === 1 ? '' : 's'}`}
+                onMouseDown={suppressLabelSelectionFromBadge}
+                onClick={openWarningsFromBadge}
+              >
+                Warning
+              </button>
+            ) : null}
+            {activeWarningCount === 0 && dismissedWarningCount > 0 ? (
+              <button
+                type="button"
+                className="course-warning-dismissed-badge course-warning-dismissed-badge-button"
+                title={dismissedWarningTooltip}
+                aria-label={`Open ${dismissedWarningCount} dismissed warning${dismissedWarningCount === 1 ? '' : 's'}`}
+                onMouseDown={suppressLabelSelectionFromBadge}
+                onClick={openWarningsFromBadge}
+              >
+                Dismissed Warning
+              </button>
+            ) : null}
           </div>
           {row.isLinked ? (
             <p className="course-linked-note">
@@ -3442,6 +3675,30 @@ function App() {
                   />
                   Show cancelled
                 </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={showWarningsOnly}
+                    onChange={(event) => setShowWarningsOnly(event.target.checked)}
+                  />
+                  Show warnings only
+                </label>
+                <label className="warning-type-filter-label">
+                  Warning type
+                  <select
+                    className="warning-type-filter-select"
+                    value={warningTypeFilter}
+                    onChange={(event) => setWarningTypeFilter(event.target.value)}
+                    disabled={!showWarningsOnly || warningTypeOptions.length === 0}
+                  >
+                    <option value="">All warnings</option>
+                    {warningTypeOptions.map((option) => (
+                      <option key={option.code} value={option.code}>
+                        {option.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
             </div>
 
@@ -3494,11 +3751,13 @@ function App() {
               </section>
 
               {navigationFrames.map((frame) => {
-                const frameSchedulableCount = frame.courses.filter((course) => isSchedulableCourse(course)).length;
-                const frameSelectedCount = frame.courses.filter(
+                const frameSelectableCourses = selectableCoursesForFrame(frame);
+                const frameSelectableCount = frameSelectableCourses.length;
+                const frameScopedSelectedCount = frameSelectableCourses.filter((course) => selectedIds.has(course.id)).length;
+                const frameTotalSelectedCount = frame.courses.filter(
                   (course) => isSchedulableCourse(course) && selectedIds.has(course.id)
                 ).length;
-                const frameAllSelected = frameSchedulableCount > 0 && frameSelectedCount === frameSchedulableCount;
+                const frameAllSelected = frameSelectableCount > 0 && frameScopedSelectedCount === frameSelectableCount;
                 const alwaysSelectLinkedEnabled = alwaysSelectLinkedFrameKeys.has(frame.key);
 
                 return (
@@ -3526,7 +3785,7 @@ function App() {
                         type="button"
                         className="course-info-link"
                         onClick={() => toggleSelectAllInFrame(frame)}
-                        disabled={frameSchedulableCount === 0}
+                        disabled={frameSelectableCount === 0}
                       >
                         {frameAllSelected ? 'Unselect All' : 'Select All'}
                       </button>
@@ -3534,7 +3793,7 @@ function App() {
                         type="button"
                         className="course-info-link"
                         onClick={() => clearFrameSelection(frame.key)}
-                        disabled={frameSelectedCount === 0}
+                        disabled={frameTotalSelectedCount === 0}
                       >
                         Clear Selections
                       </button>
@@ -3557,7 +3816,7 @@ function App() {
                       </p>
                       <div className="subject-frame-controls">
                         <span className="subject-frame-count">
-                          {frameSelectedCount} selected
+                          {frameTotalSelectedCount} selected
                         </span>
                         <label className="subject-frame-toggle">
                           <input
@@ -3771,6 +4030,7 @@ function App() {
                     const instructorEntries = instructorEntriesForCourse(course);
                     const titleEntries = titleEntriesForCourse(course);
                     const courseComments = commentEntriesForCourse(course);
+                    const courseWarnings = courseWarningsById.get(course.id) ?? [];
                     const isLinkedPrintCourse = course.relationType === 'linked';
                     const linkedParentId = linkedParentIdByChildId.get(course.id);
                     const linkedParentCourse = linkedParentId ? courseById.get(linkedParentId) ?? null : null;
@@ -3851,6 +4111,32 @@ function App() {
                         <p>
                           <strong>Meeting Pattern:</strong> {summarizeMeetings(course)}
                         </p>
+                        {courseWarnings.length > 0 ? (
+                          <div className="print-warning-block">
+                            <strong>Warnings</strong>
+                            <ul className="print-warning-list">
+                              {courseWarnings.map((warning) => (
+                                <li
+                                  key={`${course.id}-print-warning-${warning.id}`}
+                                  className={warning.dismissed ? 'print-warning-item-dismissed' : ''}
+                                >
+                                  <p className="print-warning-summary">
+                                    <strong>{warning.title}</strong>
+                                    {warning.dismissed ? ' (Dismissed)' : ''}
+                                  </p>
+                                  <p className="print-warning-description">{warning.description}</p>
+                                  {warning.evidence?.length ? (
+                                    <ul>
+                                      {warning.evidence.map((evidenceEntry) => (
+                                        <li key={`${warning.id}-print-evidence-${evidenceEntry}`}>{evidenceEntry}</li>
+                                      ))}
+                                    </ul>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
                         {courseComments.length > 0 ? (
                           <div>
                             <strong>Description / Notes</strong>
@@ -3963,6 +4249,80 @@ function App() {
         </div>
       ) : null}
 
+      {warningDialogCourse ? (
+        <div className="warning-detail-overlay" role="presentation" onClick={closeWarningDialog}>
+          <aside
+            className="warning-detail-box"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Course warnings"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="detail-title-row">
+              <h3>
+                {warningDialogCourse.courseNumber}
+                {warningDialogCourse.section ? ` | Section ${warningDialogCourse.section}` : ''}
+              </h3>
+              <button
+                type="button"
+                className="detail-close-button"
+                aria-label="Close warnings"
+                onClick={closeWarningDialog}
+              >
+                X
+              </button>
+            </div>
+            <p className="detail-course-name">{warningDialogCourse.title}</p>
+            <p className="detail-meta">
+              <strong>Instructor:</strong> {warningDialogCourse.instructor || 'TBA'} | <strong>Campus:</strong>{' '}
+              {courseCampusLabel(warningDialogCourse) || 'N/A'}
+            </p>
+            <p className="detail-meta">
+              <strong>Meeting Pattern:</strong> {summarizeMeetings(warningDialogCourse)}
+            </p>
+            {warningDialogCourseWarnings.length ? (
+              <div className="detail-notes detail-warning-notes">
+                <strong>Warnings</strong>
+                <ul>
+                  {warningDialogCourseWarnings.map((warning) => (
+                    <li key={warning.id} className={warning.dismissed ? 'detail-warning-item-dismissed' : ''}>
+                      <p className="detail-warning-title">
+                        <strong>{warning.title}</strong>
+                        {warning.dismissed ? ' (Dismissed)' : ''}
+                      </p>
+                      <p className="detail-warning-description">{warning.description}</p>
+                      {warning.evidence?.length ? (
+                        <ul>
+                          {warning.evidence.map((evidenceEntry) => (
+                            <li key={`${warning.id}|dialog|${evidenceEntry}`}>{evidenceEntry}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="detail-warning-action"
+                        onClick={() => {
+                          if (warning.dismissed) {
+                            restoreCourseWarning(warning.id);
+                          } else {
+                            dismissCourseWarning(warning.id);
+                          }
+                        }}
+                        aria-label={warning.dismissed ? 'Restore warning' : 'Dismiss warning'}
+                      >
+                        {warning.dismissed ? 'Restore Warning' : 'Dismiss Warning'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="detail-meta">No warnings for this class.</p>
+            )}
+          </aside>
+        </div>
+      ) : null}
+
       {activeCourse ? (
         <div className="course-detail-overlay" role="presentation" onClick={closeCourseDetails}>
           <aside
@@ -4043,6 +4403,43 @@ function App() {
             <p className="detail-meta">
               <strong>Meeting Pattern:</strong> {summarizeMeetings(activeCourse)}
             </p>
+            {activeCourseWarnings.length ? (
+              <div className="detail-notes detail-warning-notes">
+                <strong>Warnings</strong>
+                <ul>
+                  {activeCourseWarnings.map((warning) => (
+                    <li key={warning.id} className={warning.dismissed ? 'detail-warning-item-dismissed' : ''}>
+                      <p className="detail-warning-title">
+                        <strong>{warning.title}</strong>
+                        {warning.dismissed ? ' (Dismissed)' : ''}
+                      </p>
+                      <p className="detail-warning-description">{warning.description}</p>
+                      {warning.evidence?.length ? (
+                        <ul>
+                          {warning.evidence.map((evidenceEntry) => (
+                            <li key={`${warning.id}|${evidenceEntry}`}>{evidenceEntry}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="detail-warning-action"
+                        onClick={() => {
+                          if (warning.dismissed) {
+                            restoreCourseWarning(warning.id);
+                          } else {
+                            dismissCourseWarning(warning.id);
+                          }
+                        }}
+                        aria-label={warning.dismissed ? 'Restore warning' : 'Dismiss warning'}
+                      >
+                        {warning.dismissed ? 'Restore Warning' : 'Dismiss Warning'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {commentEntriesForCourse(activeCourse).length ? (
               <div className="detail-notes">
                 <strong>Description / Notes</strong>
