@@ -856,6 +856,9 @@ button:disabled {
 }
 
 .course-warning-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 0.72rem;
   font-weight: 700;
   color: #7a3d00;
@@ -866,6 +869,9 @@ button:disabled {
 }
 
 .course-warning-dismissed-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 0.72rem;
   font-weight: 600;
   color: #5d6472;
@@ -873,6 +879,22 @@ button:disabled {
   border: 1px solid #c4ccd7;
   border-radius: 999px;
   padding: 0.1rem 0.45rem;
+}
+
+.course-warning-badge-button,
+.course-warning-dismissed-badge-button {
+  appearance: none;
+  font-family: inherit;
+  line-height: 1.15;
+  cursor: pointer;
+}
+
+.course-warning-badge-button:hover {
+  background: #ffddb5;
+}
+
+.course-warning-dismissed-badge-button:hover {
+  background: #dfe5ec;
 }
 
 .course-name {
@@ -1294,6 +1316,28 @@ button:disabled {
   background: #0b1d2320;
 }
 
+.warning-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1110;
+  background: #0b1d2320;
+}
+
+.warning-detail-box {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border: 1px solid #cad7d4;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 0.7rem 0.8rem;
+  width: min(560px, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  box-shadow: 0 18px 44px #0d3b4a40;
+}
+
 .search-syntax-overlay {
   position: fixed;
   inset: 0;
@@ -1629,6 +1673,7 @@ body.print-prep .top-panel,
 body.print-prep .workspace,
 body.print-prep .error-box,
 body.print-prep .course-detail-overlay,
+body.print-prep .warning-detail-overlay,
 body.print-prep .search-syntax-overlay,
 body.print-prep .share-toast,
 body.print-prep .app-version-badge {
@@ -2042,6 +2087,7 @@ body.print-prep .print-detail-card:last-child {
   .workspace,
   .error-box,
   .course-detail-overlay,
+  .warning-detail-overlay,
   .search-syntax-overlay,
   .app-version-badge {
     display: none !important;
