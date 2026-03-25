@@ -89,6 +89,8 @@ function run() {
 
   const instructorDayTimeA = createCourse('inst-1', {
     courseNumber: 'CSCI 6350',
+    title: 'Advanced Systems Seminar',
+    normalizedTitle: 'advanced systems seminar',
     registrationDetails: [{ courseNumber: 'CSCI 6350', sections: ['10'], crns: ['63500'] }],
     instructor: 'Park, T',
     instructorDetails: [{ courseNumber: 'CSCI 6350', instructor: 'Park, T' }],
@@ -97,9 +99,74 @@ function run() {
   });
   const instructorDayTimeB = createCourse('inst-2', {
     courseNumber: 'CSCI 6351',
+    title: 'Distributed Platforms Studio',
+    normalizedTitle: 'distributed platforms studio',
     registrationDetails: [{ courseNumber: 'CSCI 6351', sections: ['11'], crns: ['63510'] }],
     instructor: 'Park, T',
     instructorDetails: [{ courseNumber: 'CSCI 6351', instructor: 'Park, T' }],
+    meetings: [{ day: 'R', startMin: 960, endMin: 1110, startLabel: '4:00 PM', endLabel: '6:30 PM' }],
+    meetingSignature: 'R:960-1110',
+  });
+  const sameNameInstructorTimeA = createCourse('inst-same-name-1', {
+    courseNumber: 'CSCI 7350',
+    title: 'Advanced Topics Practicum',
+    normalizedTitle: 'advanced topics practicum',
+    registrationDetails: [{ courseNumber: 'CSCI 7350', sections: ['20'], crns: ['73500'] }],
+    instructor: 'Park, T',
+    instructorDetails: [{ courseNumber: 'CSCI 7350', instructor: 'Park, T' }],
+    meetings: [{ day: 'R', startMin: 780, endMin: 930, startLabel: '1:00 PM', endLabel: '3:30 PM' }],
+    meetingSignature: 'R:780-930',
+  });
+  const sameNameInstructorTimeB = createCourse('inst-same-name-2', {
+    courseNumber: 'CSCI 7351',
+    title: 'Advanced Topics Practicum',
+    normalizedTitle: 'advanced topics practicum',
+    registrationDetails: [{ courseNumber: 'CSCI 7351', sections: ['21'], crns: ['73510'] }],
+    instructor: 'Park, T',
+    instructorDetails: [{ courseNumber: 'CSCI 7351', instructor: 'Park, T' }],
+    meetings: [{ day: 'R', startMin: 960, endMin: 1110, startLabel: '4:00 PM', endLabel: '6:30 PM' }],
+    meetingSignature: 'R:960-1110',
+  });
+
+  const mergedCrosslisted80 = createCourse('missing-section-crosslisted', {
+    relationType: 'cross-listed',
+    courseNumber: 'CSCI 4123 / CSCI 6123',
+    section: '80',
+    registrationDetails: [
+      { courseNumber: 'CSCI 4123', sections: ['80'], crns: ['48000'] },
+      { courseNumber: 'CSCI 6123', sections: ['80'], crns: ['68000'] },
+    ],
+    instructor: 'Lee, A',
+    instructorDetails: [
+      { courseNumber: 'CSCI 4123', instructor: 'Lee, A' },
+      { courseNumber: 'CSCI 6123', instructor: 'Lee, A' },
+    ],
+    meetings: [{ day: 'M', startMin: 600, endMin: 675, startLabel: '10:00 AM', endLabel: '11:15 AM' }],
+    meetingSignature: 'M:600-675',
+  });
+  const missingSection81Only = createCourse('missing-section-6-only', {
+    relationType: 'primary',
+    courseNumber: 'CSCI 6123',
+    section: '81',
+    registrationDetails: [{ courseNumber: 'CSCI 6123', sections: ['81'], crns: ['68100'] }],
+    instructor: 'Lee, A',
+    instructorDetails: [{ courseNumber: 'CSCI 6123', instructor: 'Lee, A' }],
+    meetings: [{ day: 'M', startMin: 600, endMin: 675, startLabel: '10:00 AM', endLabel: '11:15 AM' }],
+    meetingSignature: 'M:600-675',
+  });
+  const tbaCourseA = createCourse('tba-1', {
+    courseNumber: 'CSCI 7300',
+    registrationDetails: [{ courseNumber: 'CSCI 7300', sections: ['10'], crns: ['73000'] }],
+    instructor: 'TBA',
+    instructorDetails: [{ courseNumber: 'CSCI 7300', instructor: 'TBA' }],
+    meetings: [{ day: 'R', startMin: 780, endMin: 930, startLabel: '1:00 PM', endLabel: '3:30 PM' }],
+    meetingSignature: 'R:780-930',
+  });
+  const tbaCourseB = createCourse('tba-2', {
+    courseNumber: 'CSCI 7301',
+    registrationDetails: [{ courseNumber: 'CSCI 7301', sections: ['11'], crns: ['73010'] }],
+    instructor: 'TBA',
+    instructorDetails: [{ courseNumber: 'CSCI 7301', instructor: 'TBA' }],
     meetings: [{ day: 'R', startMin: 960, endMin: 1110, startLabel: '4:00 PM', endLabel: '6:30 PM' }],
     meetingSignature: 'R:960-1110',
   });
@@ -111,6 +178,12 @@ function run() {
     missingCrosslist6xxx,
     instructorDayTimeA,
     instructorDayTimeB,
+    sameNameInstructorTimeA,
+    sameNameInstructorTimeB,
+    mergedCrosslisted80,
+    missingSection81Only,
+    tbaCourseA,
+    tbaCourseB,
   ]);
 
   assert(
@@ -130,12 +203,38 @@ function run() {
     'Expected missing cross-list warning for 6XXX course.'
   );
   assert(
-    warningCodesForCourse(warningMap, 'inst-1').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
-    'Expected same-instructor same-day different 2.5-hour time warning (course A).'
+    !warningCodesForCourse(warningMap, 'inst-1').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
+    'Did not expect same-instructor warning for different class names (course A).'
   );
   assert(
-    warningCodesForCourse(warningMap, 'inst-2').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
-    'Expected same-instructor same-day different 2.5-hour time warning (course B).'
+    !warningCodesForCourse(warningMap, 'inst-2').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
+    'Did not expect same-instructor warning for different class names (course B).'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'inst-same-name-1').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
+    'Expected same-instructor warning when same class name has different 2.5-hour times (course A).'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'inst-same-name-2').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
+    'Expected same-instructor warning when same class name has different 2.5-hour times (course B).'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'missing-section-crosslisted').has(
+      WARNING_CODES.INCONSISTENT_CROSSLISTING_BY_SECTION
+    ),
+    'Expected missing-section warning on cross-listed section when another section lacks counterpart.'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'missing-section-6-only').has(WARNING_CODES.INCONSISTENT_CROSSLISTING_BY_SECTION),
+    'Expected missing-section warning on non-cross-listed section lacking counterpart.'
+  );
+  assert(
+    !warningCodesForCourse(warningMap, 'tba-1').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
+    'Did not expect instructor-time warning for TBA instructor (course A).'
+  );
+  assert(
+    !warningCodesForCourse(warningMap, 'tba-2').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
+    'Did not expect instructor-time warning for TBA instructor (course B).'
   );
 
   const warningMapRepeat = buildCourseWarnings([
@@ -145,6 +244,12 @@ function run() {
     missingCrosslist6xxx,
     instructorDayTimeA,
     instructorDayTimeB,
+    sameNameInstructorTimeA,
+    sameNameInstructorTimeB,
+    mergedCrosslisted80,
+    missingSection81Only,
+    tbaCourseA,
+    tbaCourseB,
   ]);
   for (const [courseId, warnings] of warningMap.entries()) {
     const repeatWarnings = warningMapRepeat.get(courseId) ?? [];

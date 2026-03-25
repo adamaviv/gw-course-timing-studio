@@ -3,6 +3,7 @@ const WARNING_CODES = {
   MULTI_DAY_2P5_HOUR_PATTERN: 'MULTI_DAY_2P5_HOUR_PATTERN',
   MISSING_CROSSLIST_4XXX_6XXX: 'MISSING_CROSSLIST_4XXX_6XXX',
   INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES: 'INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES',
+  INCONSISTENT_CROSSLISTING_BY_SECTION: 'INCONSISTENT_CROSSLISTING_BY_SECTION',
 };
 
 function normalizeText(value) {
@@ -23,6 +24,21 @@ function normalizeInstructorToken(value) {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isPlaceholderInstructorToken(token) {
+  const normalized = normalizeInstructorToken(token);
+  if (!normalized) {
+    return true;
+  }
+  const placeholderTokens = new Set(['tba', 'tbd', 'staff', 'arranged', 'na', 'n a']);
+  if (placeholderTokens.has(normalized)) {
+    return true;
+  }
+  if (normalized === 'to be announced') {
+    return true;
+  }
+  return false;
 }
 
 function registrationDetailsForCourse(course) {
@@ -181,6 +197,14 @@ function courseDisplayLabel(course) {
   const sectionText = section ? `Sec ${section}` : 'Sec N/A';
   const crnText = crn ? `CRN ${crn}` : 'CRN N/A';
   return `${courseNumber} | ${sectionText} | ${crnText}`;
+}
+
+function classNameTokenForCourse(course) {
+  const normalizedTitle = normalizeToken(course?.normalizedTitle || course?.title);
+  if (normalizedTitle) {
+    return normalizedTitle;
+  }
+  return normalizeToken(course?.courseNumber);
 }
 
 function buildWarningId(course, code, fingerprint) {
@@ -371,6 +395,132 @@ export function buildCourseWarnings(courses = []) {
     }
   }
 
+  const crosslistConsistencyBuckets = new Map();
+  for (const course of schedulableCourses) {
+    const frameKey = normalizeText(course?.frameKey);
+    const tokens = courseNumberTokensForCourse(course).filter((token) => token.level === 4 || token.level === 6);
+    if (!frameKey || tokens.length === 0) {
+      continue;
+    }
+
+    for (const token of tokens) {
+      const bucketKey = `${frameKey}|${token.subject}|${token.suffix}`;
+      if (!crosslistConsistencyBuckets.has(bucketKey)) {
+        crosslistConsistencyBuckets.set(bucketKey, new Map());
+      }
+      const courseBucket = crosslistConsistencyBuckets.get(bucketKey);
+      const existing = courseBucket.get(course.id) ?? {
+        course,
+        levels: new Set(),
+      };
+      existing.levels.add(token.level);
+      courseBucket.set(course.id, existing);
+    }
+  }
+
+  for (const [key, courseBucket] of crosslistConsistencyBuckets.entries()) {
+    const [frameKey, subject, suffix] = key.split('|');
+    const entries = [...courseBucket.values()];
+    if (entries.length < 2) {
+      continue;
+    }
+
+    const levelSet = new Set(entries.flatMap((entry) => [...entry.levels]));
+    if (!levelSet.has(4) || !levelSet.has(6)) {
+      continue;
+    }
+
+    const sectionLevels = new Map();
+    for (const entry of entries) {
+      const details = registrationDetailsForCourse(entry.course);
+      let matchedAnyDetail = false;
+
+      for (const detail of details) {
+        const detailTokens = parseCourseNumberTokens(detail?.courseNumber, subject).filter(
+          (token) =>
+            token.subject === subject &&
+            token.suffix === suffix &&
+            (token.level === 4 || token.level === 6)
+        );
+        if (detailTokens.length === 0) {
+          continue;
+        }
+        matchedAnyDetail = true;
+        const levelsForDetail = new Set(detailTokens.map((token) => token.level));
+        const sections = uniqueSorted(
+          (detail?.sections ?? [])
+            .map((section) => normalizeText(section))
+            .filter(Boolean)
+        );
+        const targetSections = sections.length > 0 ? sections : [normalizeText(entry.course?.section) || 'N/A'];
+        for (const section of targetSections) {
+          const sectionSet = sectionLevels.get(section) ?? new Set();
+          for (const level of levelsForDetail) {
+            sectionSet.add(level);
+          }
+          sectionLevels.set(section, sectionSet);
+        }
+      }
+
+      if (!matchedAnyDetail) {
+        const fallbackSection = normalizeText(entry.course?.section) || 'N/A';
+        const sectionSet = sectionLevels.get(fallbackSection) ?? new Set();
+        for (const level of entry.levels) {
+          sectionSet.add(level);
+        }
+        sectionLevels.set(fallbackSection, sectionSet);
+      }
+    }
+
+    if (sectionLevels.size < 2) {
+      continue;
+    }
+
+    const completeSections = [...sectionLevels.entries()].filter(([, levels]) => levels.has(4) && levels.has(6));
+    const incompleteSections = [...sectionLevels.entries()].filter(([, levels]) => !(levels.has(4) && levels.has(6)));
+    if (completeSections.length === 0 || incompleteSections.length === 0) {
+      continue;
+    }
+
+    const crosslistedEntries = entries.filter((entry) => {
+      const relationType = normalizeText(entry.course?.relationType).toLowerCase();
+      return relationType === 'cross-listed' || registrationDetailsForCourse(entry.course).length > 1;
+    });
+    const nonCrosslistedEntries = entries.filter(
+      (entry) => !crosslistedEntries.some((crossEntry) => crossEntry.course.id === entry.course.id)
+    );
+    if (crosslistedEntries.length === 0 || nonCrosslistedEntries.length === 0) {
+      continue;
+    }
+
+    const crosslistedLabels = uniqueSorted(
+      crosslistedEntries.map((entry) => `${courseDisplayLabel(entry.course)} [cross-listed]`)
+    );
+    const nonCrosslistedLabels = uniqueSorted(
+      nonCrosslistedEntries.map((entry) => `${courseDisplayLabel(entry.course)} [not cross-listed]`)
+    );
+    const sectionEvidence = uniqueSorted(
+      [...sectionLevels.entries()].map(([section, levels]) => {
+        const has4 = levels.has(4);
+        const has6 = levels.has(6);
+        return `Section ${section}: ${has4 ? '4XXX' : 'missing 4XXX'} / ${has6 ? '6XXX' : 'missing 6XXX'}`;
+      })
+    );
+
+    for (const entry of entries) {
+      const fingerprint = `${key}|sections:${sectionEvidence.join('||')}|cross:${crosslistedLabels.join('||')}|non:${nonCrosslistedLabels.join('||')}`;
+      const warning = {
+        id: buildWarningId(entry.course, WARNING_CODES.INCONSISTENT_CROSSLISTING_BY_SECTION, fingerprint),
+        code: WARNING_CODES.INCONSISTENT_CROSSLISTING_BY_SECTION,
+        title: 'Missing Section',
+        description:
+          'Some sections in this 4XXX/6XXX family are cross-listed while other sections are not. This may indicate missing cross-link metadata.',
+        evidence: [...sectionEvidence, ...crosslistedLabels, ...nonCrosslistedLabels],
+      };
+      addWarning(warningsByCourseId, warningKeySetByCourseId, entry.course, warning);
+    }
+  }
+
   const instructorBuckets = new Map();
   for (const course of schedulableCourses) {
     const relationType = normalizeText(course?.relationType).toLowerCase();
@@ -379,10 +529,11 @@ export function buildCourseWarnings(courses = []) {
     }
     const frameKey = normalizeText(course?.frameKey);
     const subject = normalizeText(course?.frameSubjectId || course?.subject).toUpperCase();
-    if (!frameKey || !subject) {
+    const classNameToken = classNameTokenForCourse(course);
+    if (!frameKey || !subject || !classNameToken) {
       continue;
     }
-    const instructors = instructorTokensForCourse(course);
+    const instructors = instructorTokensForCourse(course).filter((token) => !isPlaceholderInstructorToken(token));
     const longMeetings = (course?.meetings ?? []).filter((meeting) => meetingDurationMinutes(meeting) === 150);
     if (instructors.length === 0 || longMeetings.length === 0) {
       continue;
@@ -396,7 +547,7 @@ export function buildCourseWarnings(courses = []) {
         if (!day || !Number.isFinite(startMin) || !Number.isFinite(endMin)) {
           continue;
         }
-        const key = `${frameKey}|${subject}|${instructor}|${day}`;
+        const key = `${frameKey}|${subject}|${instructor}|${day}|${classNameToken}`;
         const bucket = instructorBuckets.get(key) ?? [];
         bucket.push({
           course,
@@ -456,7 +607,7 @@ export function buildCourseWarnings(courses = []) {
         id: buildWarningId(entry.course, WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES, fingerprint),
         code: WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES,
         title: 'Instructor Has Multiple 2.5 Hour Times On Same Day',
-        description: 'The same instructor appears on 150-minute classes on the same day at different times.',
+        description: 'The same instructor appears on the same class name as 150-minute meetings on the same day at different times.',
         evidence: counterpartLabels,
       };
       addWarning(warningsByCourseId, warningKeySetByCourseId, entry.course, warning);
