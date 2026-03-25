@@ -1069,6 +1069,7 @@ function App() {
   const [showOnlySelected, setShowOnlySelected] = useState(false);
   const [showCancelledCourses, setShowCancelledCourses] = useState(false);
   const [showWarningsOnly, setShowWarningsOnly] = useState(false);
+  const [warningTypeFilter, setWarningTypeFilter] = useState('');
   const [expandedLinkedParentIds, setExpandedLinkedParentIds] = useState(() => new Set());
   const [alwaysSelectLinkedFrameKeys, setAlwaysSelectLinkedFrameKeys] = useState(() => new Set());
   const [collapsedFrameKeys, setCollapsedFrameKeys] = useState(() => new Set());
@@ -1436,10 +1437,47 @@ function App() {
     }
     return mapping;
   }, [computedWarningsByCourseId, dismissedWarningIds]);
-  const warnedCourseIds = useMemo(
-    () => new Set([...courseWarningsById.entries()].filter(([, warnings]) => (warnings ?? []).length > 0).map(([id]) => id)),
-    [courseWarningsById]
-  );
+  const warningTypeOptions = useMemo(() => {
+    const byCode = new Map();
+    for (const warnings of courseWarningsById.values()) {
+      for (const warning of warnings ?? []) {
+        const code = String(warning?.code || '').trim();
+        const title = String(warning?.title || '').trim();
+        if (!code || !title) {
+          continue;
+        }
+        if (!byCode.has(code)) {
+          byCode.set(code, title);
+        }
+      }
+    }
+    return [...byCode.entries()]
+      .map(([code, title]) => ({ code, title }))
+      .sort((left, right) => left.title.localeCompare(right.title));
+  }, [courseWarningsById]);
+  const warningFilteredCourseIds = useMemo(() => {
+    const filtered = new Set();
+    for (const [courseId, warnings] of courseWarningsById.entries()) {
+      const entries = warnings ?? [];
+      if (entries.length === 0) {
+        continue;
+      }
+      if (!warningTypeFilter || entries.some((warning) => warning.code === warningTypeFilter)) {
+        filtered.add(courseId);
+      }
+    }
+    return filtered;
+  }, [courseWarningsById, warningTypeFilter]);
+
+  useEffect(() => {
+    if (!warningTypeFilter) {
+      return;
+    }
+    if (warningTypeOptions.some((option) => option.code === warningTypeFilter)) {
+      return;
+    }
+    setWarningTypeFilter('');
+  }, [warningTypeFilter, warningTypeOptions]);
 
   const primaryListCourses = useMemo(
     () =>
@@ -1454,12 +1492,12 @@ function App() {
     for (const course of primaryListCourses) {
       const linkedChildren = linkedChildrenByParentId.get(course.id) ?? [];
       const showLinked = expandedLinkedParentIds.has(course.id);
-      const primaryHasWarning = warnedCourseIds.has(course.id);
+      const primaryHasWarning = warningFilteredCourseIds.has(course.id);
       const visibleLinkedChildren = showOnlySelected
         ? linkedChildren.filter((linkedCourse) => selectedIds.has(linkedCourse.id))
         : linkedChildren;
       const warningFilteredChildren = showWarningsOnly
-        ? visibleLinkedChildren.filter((linkedCourse) => warnedCourseIds.has(linkedCourse.id))
+        ? visibleLinkedChildren.filter((linkedCourse) => warningFilteredCourseIds.has(linkedCourse.id))
         : visibleLinkedChildren;
       const showPrimary =
         !showOnlySelected ||
@@ -1499,7 +1537,7 @@ function App() {
     showOnlySelected,
     selectedIds,
     showWarningsOnly,
-    warnedCourseIds,
+    warningFilteredCourseIds,
   ]);
 
   const listRowsByFrame = useMemo(() => {
@@ -2856,7 +2894,7 @@ function App() {
     if (isSearchActive || showWarningsOnly) {
       return [...new Map((frame.rows ?? []).map((row) => [row.course.id, row.course])).values()]
         .filter((course) => isSchedulableCourse(course))
-        .filter((course) => (showWarningsOnly ? warnedCourseIds.has(course.id) : true));
+        .filter((course) => (showWarningsOnly ? warningFilteredCourseIds.has(course.id) : true));
     }
     return (frame.courses ?? []).filter((course) => isSchedulableCourse(course));
   }
@@ -3570,6 +3608,22 @@ function App() {
                     onChange={(event) => setShowWarningsOnly(event.target.checked)}
                   />
                   Show warnings only
+                </label>
+                <label className="warning-type-filter-label">
+                  Warning type
+                  <select
+                    className="warning-type-filter-select"
+                    value={warningTypeFilter}
+                    onChange={(event) => setWarningTypeFilter(event.target.value)}
+                    disabled={!showWarningsOnly || warningTypeOptions.length === 0}
+                  >
+                    <option value="">All warnings</option>
+                    {warningTypeOptions.map((option) => (
+                      <option key={option.code} value={option.code}>
+                        {option.title}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </div>
             </div>
