@@ -1081,6 +1081,7 @@ function App() {
   const [dragOverPinnedKey, setDragOverPinnedKey] = useState(null);
   const [isSelectedFrameCollapsed, setIsSelectedFrameCollapsed] = useState(true);
   const [activeCourseId, setActiveCourseId] = useState(null);
+  const [warningDialogCourseId, setWarningDialogCourseId] = useState(null);
   const [detailPosition, setDetailPosition] = useState(null);
   const [focusedDayCode, setFocusedDayCode] = useState(null);
   const [printGeneratedAt, setPrintGeneratedAt] = useState('');
@@ -1260,6 +1261,19 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeydown);
   }, [isSearchSyntaxOpen]);
 
+  useEffect(() => {
+    if (!warningDialogCourseId) {
+      return undefined;
+    }
+    function handleKeydown(event) {
+      if (event.key === 'Escape') {
+        closeWarningDialog();
+      }
+    }
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  }, [warningDialogCourseId]);
+
   const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
   const recoveryReloadHint = useMemo(() => getRecoveryReloadHint(), []);
   const orderedRecentSubjects = useMemo(() => {
@@ -1301,6 +1315,7 @@ function App() {
       return next;
     });
     setActiveCourseId((prev) => (prev && validIds.has(prev) ? prev : null));
+    setWarningDialogCourseId((prev) => (prev && validIds.has(prev) ? prev : null));
   }, [courses]);
 
   useEffect(() => {
@@ -1686,6 +1701,14 @@ function App() {
     () => (activeCourse ? courseWarningsById.get(activeCourse.id) ?? [] : []),
     [activeCourse, courseWarningsById]
   );
+  const warningDialogCourse = useMemo(
+    () => courses.find((course) => course.id === warningDialogCourseId) ?? null,
+    [courses, warningDialogCourseId]
+  );
+  const warningDialogCourseWarnings = useMemo(
+    () => (warningDialogCourse ? courseWarningsById.get(warningDialogCourse.id) ?? [] : []),
+    [warningDialogCourse, courseWarningsById]
+  );
   const activeCourseDetailUrl = activeCourse ? sanitizeDetailUrl(activeCourse.detailUrl) : '';
   const activeCourseCampusLabel = activeCourse ? courseCampusLabel(activeCourse) : '';
 
@@ -1845,6 +1868,10 @@ function App() {
     setDetailPosition(null);
   }
 
+  function closeWarningDialog() {
+    setWarningDialogCourseId(null);
+  }
+
   function unselectActiveCourseFromModal() {
     if (!activeCourseId) {
       return;
@@ -1858,8 +1885,13 @@ function App() {
   }
 
   function openCourseDetails(courseId, anchorElement) {
+    closeWarningDialog();
     setActiveCourseId(courseId);
     setDetailPosition(calculateDetailPosition(anchorElement?.getBoundingClientRect?.() ?? null));
+  }
+
+  function openWarningDialog(courseId) {
+    setWarningDialogCourseId(courseId);
   }
 
   function recordRecentSubject(entry) {
@@ -3033,6 +3065,28 @@ function App() {
     const courseWarnings = courseWarningsById.get(course.id) ?? [];
     const activeWarningCount = courseWarnings.filter((warning) => !warning.dismissed).length;
     const dismissedWarningCount = courseWarnings.length - activeWarningCount;
+    const activeWarningTypes = [
+      ...new Set(
+        courseWarnings
+          .filter((warning) => !warning.dismissed)
+          .map((warning) => String(warning?.title || '').trim())
+          .filter(Boolean)
+      ),
+    ];
+    const dismissedWarningTypes = [
+      ...new Set(
+        courseWarnings
+          .filter((warning) => warning.dismissed)
+          .map((warning) => String(warning?.title || '').trim())
+          .filter(Boolean)
+      ),
+    ];
+    const activeWarningTooltip = activeWarningTypes.length
+      ? `Warning type${activeWarningTypes.length === 1 ? '' : 's'}: ${activeWarningTypes.join(' | ')}`
+      : `${activeWarningCount} active warning${activeWarningCount === 1 ? '' : 's'}`;
+    const dismissedWarningTooltip = dismissedWarningTypes.length
+      ? `Dismissed warning type${dismissedWarningTypes.length === 1 ? '' : 's'}: ${dismissedWarningTypes.join(' | ')}`
+      : `${dismissedWarningCount} dismissed warning${dismissedWarningCount === 1 ? '' : 's'}`;
     const linkedCourses = !row.isLinked ? linkedChildrenByParentId.get(course.id) ?? [] : [];
     const linkedSchedulableCount = linkedCourses.filter((linkedCourse) => isSchedulableCourse(linkedCourse)).length;
     const linkedSchedulableSelectedCount = linkedCourses.filter(
@@ -3060,6 +3114,15 @@ function App() {
       .includes('(lab)')
       ? 'Linked Section (Lab)'
       : 'Linked Section';
+    const openWarningsFromBadge = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openWarningDialog(course.id);
+    };
+    const suppressLabelSelectionFromBadge = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
 
     return (
       <label
@@ -3093,17 +3156,28 @@ function App() {
             <span className="course-code">{course.courseNumber}</span>
             {course.section ? <span className="course-section">Sec {course.section}</span> : null}
             {activeWarningCount > 0 ? (
-              <span className="course-warning-badge" title={`${activeWarningCount} active warning${activeWarningCount === 1 ? '' : 's'}`}>
+              <button
+                type="button"
+                className="course-warning-badge course-warning-badge-button"
+                title={activeWarningTooltip}
+                aria-label={`Open ${activeWarningCount} active warning${activeWarningCount === 1 ? '' : 's'}`}
+                onMouseDown={suppressLabelSelectionFromBadge}
+                onClick={openWarningsFromBadge}
+              >
                 Warning
-              </span>
+              </button>
             ) : null}
             {activeWarningCount === 0 && dismissedWarningCount > 0 ? (
-              <span
-                className="course-warning-dismissed-badge"
-                title={`${dismissedWarningCount} dismissed warning${dismissedWarningCount === 1 ? '' : 's'}`}
+              <button
+                type="button"
+                className="course-warning-dismissed-badge course-warning-dismissed-badge-button"
+                title={dismissedWarningTooltip}
+                aria-label={`Open ${dismissedWarningCount} dismissed warning${dismissedWarningCount === 1 ? '' : 's'}`}
+                onMouseDown={suppressLabelSelectionFromBadge}
+                onClick={openWarningsFromBadge}
               >
                 Dismissed Warning
-              </span>
+              </button>
             ) : null}
           </div>
           {row.isLinked ? (
@@ -4171,6 +4245,80 @@ function App() {
               Course numbers with suffixes (for example <code>2401W</code>) are matched as the base four digits (
               <code>2401</code>).
             </p>
+          </aside>
+        </div>
+      ) : null}
+
+      {warningDialogCourse ? (
+        <div className="warning-detail-overlay" role="presentation" onClick={closeWarningDialog}>
+          <aside
+            className="warning-detail-box"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Course warnings"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="detail-title-row">
+              <h3>
+                {warningDialogCourse.courseNumber}
+                {warningDialogCourse.section ? ` | Section ${warningDialogCourse.section}` : ''}
+              </h3>
+              <button
+                type="button"
+                className="detail-close-button"
+                aria-label="Close warnings"
+                onClick={closeWarningDialog}
+              >
+                X
+              </button>
+            </div>
+            <p className="detail-course-name">{warningDialogCourse.title}</p>
+            <p className="detail-meta">
+              <strong>Instructor:</strong> {warningDialogCourse.instructor || 'TBA'} | <strong>Campus:</strong>{' '}
+              {courseCampusLabel(warningDialogCourse) || 'N/A'}
+            </p>
+            <p className="detail-meta">
+              <strong>Meeting Pattern:</strong> {summarizeMeetings(warningDialogCourse)}
+            </p>
+            {warningDialogCourseWarnings.length ? (
+              <div className="detail-notes detail-warning-notes">
+                <strong>Warnings</strong>
+                <ul>
+                  {warningDialogCourseWarnings.map((warning) => (
+                    <li key={warning.id} className={warning.dismissed ? 'detail-warning-item-dismissed' : ''}>
+                      <p className="detail-warning-title">
+                        <strong>{warning.title}</strong>
+                        {warning.dismissed ? ' (Dismissed)' : ''}
+                      </p>
+                      <p className="detail-warning-description">{warning.description}</p>
+                      {warning.evidence?.length ? (
+                        <ul>
+                          {warning.evidence.map((evidenceEntry) => (
+                            <li key={`${warning.id}|dialog|${evidenceEntry}`}>{evidenceEntry}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="detail-warning-action"
+                        onClick={() => {
+                          if (warning.dismissed) {
+                            restoreCourseWarning(warning.id);
+                          } else {
+                            dismissCourseWarning(warning.id);
+                          }
+                        }}
+                        aria-label={warning.dismissed ? 'Restore warning' : 'Dismiss warning'}
+                      >
+                        {warning.dismissed ? 'Restore Warning' : 'Dismiss Warning'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="detail-meta">No warnings for this class.</p>
+            )}
           </aside>
         </div>
       ) : null}

@@ -605,6 +605,18 @@ const STEPS = [
       assert(rowsAfterFilter <= rowsBeforeFilter, 'Expected warning-only filter not to increase visible row count.');
 
       const warnedRow = page.locator('.course-item:has(.course-warning-badge)').first();
+      const warnedRowCheckbox = warnedRow.locator('input[type="checkbox"]');
+      const checkedBeforeWarningClick = await warnedRowCheckbox.isChecked();
+      await warnedRow.locator('.course-warning-badge').click();
+      const warningDialog = page.getByRole('dialog', { name: 'Course warnings' });
+      await warningDialog.waitFor({ timeout: 10000 });
+      const checkedAfterWarningClick = await warnedRowCheckbox.isChecked();
+      assert(
+        checkedAfterWarningClick === checkedBeforeWarningClick,
+        'Expected warning badge click to open warnings dialog without changing class selection.'
+      );
+      await page.getByRole('button', { name: 'Close warnings' }).click();
+
       await warnedRow.locator('.course-info-link-top').click();
       const dialog = page.getByRole('dialog', { name: 'Course details' });
       await dialog.waitFor({ timeout: 10000 });
