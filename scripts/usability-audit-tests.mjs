@@ -29,6 +29,7 @@ const AUDIT_CONFIG = {
   screenshotPath: process.env.USABILITY_SCREENSHOT_PATH || '/tmp/usability-audit-failure.png',
 };
 const RECENT_SUBJECTS_STORAGE_KEY = 'gw-course-studio-recent-subjects-v1';
+const DISMISSED_WARNINGS_STORAGE_KEY = 'gw-course-studio-dismissed-warnings-v1';
 const USE_MOCK_GW_API = process.env.USABILITY_USE_MOCK_GW !== '0';
 const CAMPUS_LABELS = {
   '1': 'Main Campus',
@@ -166,6 +167,87 @@ const MOCK_COURSES_BY_SUBJECT = {
       instructorDetails: [{ courseNumber: 'CSCI 8210', instructor: 'Smith, P' }],
       titleDetails: [{ courseNumber: 'CSCI 8210', title: 'Doctoral Research Methods' }],
       registrationDetails: [{ courseNumber: 'CSCI 8210', sections: ['01'], crns: ['54880'] }],
+    },
+    {
+      id: 'row-5',
+      status: 'OPEN',
+      crn: '51230',
+      courseNumber: 'CSCI 4123',
+      subject: 'CSCI',
+      numeric: 4123,
+      section: '10',
+      title: 'Systems Engineering Studio',
+      normalizedTitle: 'systems engineering studio',
+      credits: '3.00',
+      instructor: 'Lee, A',
+      room: 'SEH 210',
+      dayTimeRaw: 'T 02:00PM - 03:15PM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [{ day: 'T', dayName: 'Tuesday', startMin: 840, endMin: 915, startLabel: '2:00 PM', endLabel: '3:15 PM' }],
+      meetingSignature: 'T:840-915',
+      relationType: 'primary',
+      linkedParentCrn: '',
+      detailUrl: '',
+      scheduleDetails: [],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'CSCI 4123', instructor: 'Lee, A' }],
+      titleDetails: [{ courseNumber: 'CSCI 4123', title: 'Systems Engineering Studio' }],
+      registrationDetails: [{ courseNumber: 'CSCI 4123', sections: ['10'], crns: ['51230'] }],
+    },
+    {
+      id: 'row-6',
+      status: 'OPEN',
+      crn: '61230',
+      courseNumber: 'CSCI 6123',
+      subject: 'CSCI',
+      numeric: 6123,
+      section: '20',
+      title: 'Systems Engineering Studio',
+      normalizedTitle: 'systems engineering studio',
+      credits: '3.00',
+      instructor: 'Lee, A',
+      room: 'SEH 210',
+      dayTimeRaw: 'T 02:00PM - 03:15PM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [{ day: 'T', dayName: 'Tuesday', startMin: 840, endMin: 915, startLabel: '2:00 PM', endLabel: '3:15 PM' }],
+      meetingSignature: 'T:840-915',
+      relationType: 'primary',
+      linkedParentCrn: '',
+      detailUrl: '',
+      scheduleDetails: [],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'CSCI 6123', instructor: 'Lee, A' }],
+      titleDetails: [{ courseNumber: 'CSCI 6123', title: 'Systems Engineering Studio' }],
+      registrationDetails: [{ courseNumber: 'CSCI 6123', sections: ['20'], crns: ['61230'] }],
+    },
+    {
+      id: 'row-7',
+      status: 'OPEN',
+      crn: '69900',
+      courseNumber: 'CSCI 6990',
+      subject: 'CSCI',
+      numeric: 6990,
+      section: '11',
+      title: 'Applied Research Practicum',
+      normalizedTitle: 'applied research practicum',
+      credits: '3.00',
+      instructor: 'Jordan, K',
+      room: 'SEH 300',
+      dayTimeRaw: 'MW 06:00PM - 08:30PM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [
+        { day: 'M', dayName: 'Monday', startMin: 1080, endMin: 1230, startLabel: '6:00 PM', endLabel: '8:30 PM' },
+        { day: 'W', dayName: 'Wednesday', startMin: 1080, endMin: 1230, startLabel: '6:00 PM', endLabel: '8:30 PM' },
+      ],
+      meetingSignature: 'MW:1080-1230',
+      relationType: 'primary',
+      linkedParentCrn: '',
+      detailUrl: '',
+      scheduleDetails: [],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'CSCI 6990', instructor: 'Jordan, K' }],
+      titleDetails: [{ courseNumber: 'CSCI 6990', title: 'Applied Research Practicum' }],
+      registrationDetails: [{ courseNumber: 'CSCI 6990', sections: ['11'], crns: ['69900'] }],
     },
   ],
   ECE: [
@@ -504,6 +586,44 @@ const STEPS = [
       await page.locator('.course-item').first().waitFor({ timeout: 20000 });
       const rows = await page.locator('.course-item').count();
       assert(rows > 0, 'Expected at least one visible course row after expansion path.');
+    },
+  },
+  {
+    description: 'Warning badges, warning filter, and modal dismiss/restore work',
+    run: async ({ page }) => {
+      const warningRows = page.locator('.course-item:has(.course-warning-badge), .course-item:has(.course-warning-dismissed-badge)');
+      await warningRows.first().waitFor({ timeout: 10000 });
+      const warningCount = await warningRows.count();
+      assert(warningCount > 0, 'Expected at least one warning-tagged course row.');
+
+      const rowsBeforeFilter = await page.locator('.course-item').count();
+      const warningToggle = page.getByLabel('Show warnings only');
+      await warningToggle.check();
+      await page.waitForTimeout(300);
+      const rowsAfterFilter = await page.locator('.course-item').count();
+      assert(rowsAfterFilter > 0, 'Expected warning filter to keep warning courses visible.');
+      assert(rowsAfterFilter <= rowsBeforeFilter, 'Expected warning-only filter not to increase visible row count.');
+
+      const warnedRow = page.locator('.course-item:has(.course-warning-badge)').first();
+      await warnedRow.locator('.course-info-link-top').click();
+      const dialog = page.getByRole('dialog', { name: 'Course details' });
+      await dialog.waitFor({ timeout: 10000 });
+      await dialog.getByText('Warnings').waitFor({ timeout: 10000 });
+
+      const dismissButton = dialog.getByRole('button', { name: 'Dismiss warning' }).first();
+      await dismissButton.click();
+      await dialog.getByRole('button', { name: 'Restore warning' }).first().waitFor({ timeout: 10000 });
+
+      const storedDismissals = await page.evaluate(
+        (storageKey) => JSON.parse(window.localStorage.getItem(storageKey) || '[]'),
+        DISMISSED_WARNINGS_STORAGE_KEY
+      );
+      assert(Array.isArray(storedDismissals) && storedDismissals.length > 0, 'Expected dismissed warning IDs in local storage.');
+
+      await dialog.getByRole('button', { name: 'Restore warning' }).first().click();
+      await dialog.getByRole('button', { name: 'Dismiss warning' }).first().waitFor({ timeout: 10000 });
+      await page.getByRole('button', { name: 'Close details' }).click();
+      await warningToggle.uncheck();
     },
   },
   {

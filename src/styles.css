@@ -834,6 +834,26 @@ button:disabled {
   border-radius: 999px;
 }
 
+.course-warning-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #7a3d00;
+  background: #ffe7cc;
+  border: 1px solid #eab06a;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}
+
+.course-warning-dismissed-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #5d6472;
+  background: #eef1f5;
+  border: 1px solid #c4ccd7;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}
+
 .course-name {
   margin: 0.16rem 0;
   font-weight: 600;
@@ -1395,6 +1415,38 @@ button:disabled {
   color: #25414c;
 }
 
+.detail-warning-notes ul ul {
+  margin-top: 0.25rem;
+}
+
+.detail-warning-title {
+  margin: 0.12rem 0 0.12rem;
+}
+
+.detail-warning-description {
+  margin: 0;
+  color: #35505a;
+}
+
+.detail-warning-item-dismissed {
+  opacity: 0.8;
+}
+
+.detail-warning-action {
+  margin-top: 0.35rem;
+  font-size: 0.74rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 8px;
+  border: 1px solid #93aeb5;
+  background: #f3fbff;
+  color: #0b5366;
+  cursor: pointer;
+}
+
+.detail-warning-action:hover {
+  background: #e5f5fb;
+}
+
 .detail-links {
   margin-top: 0.6rem;
   display: flex;
@@ -1881,6 +1933,33 @@ body.print-prep .print-detail-card:last-child {
 .print-detail-card p {
   margin: 0.13rem 0;
   font-size: 0.8rem;
+}
+
+.print-warning-summary {
+  color: #7a3d00;
+  margin: 0.12rem 0 0.1rem;
+}
+
+.print-warning-description {
+  margin: 0 0 0.1rem;
+  color: #4e3f2f;
+}
+
+.print-warning-block {
+  margin-top: 0.25rem;
+}
+
+.print-warning-list {
+  margin: 0.2rem 0 0;
+  padding-left: 1rem;
+}
+
+.print-warning-item-dismissed {
+  opacity: 0.82;
+}
+
+.print-warning-list ul {
+  margin-top: 0.16rem;
 }
 
 .print-detail-card div {

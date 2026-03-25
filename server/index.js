@@ -750,6 +750,49 @@ function buildTitleDetails(rows) {
   return [...dedup.values()];
 }
 
+function buildOfferingDetails(rows) {
+  const dedup = new Map();
+
+  const addEntry = (offering) => {
+    const courseNumber = cleanText(offering?.courseNumber) || 'Course';
+    const crns = uniqueStrings(offering?.crns ?? []);
+    const instructor = cleanText(offering?.instructor) || 'TBA';
+    const room = cleanText(offering?.room) || 'N/A';
+    const meetingSignature = cleanText(offering?.meetingSignature);
+    const key = [courseNumber, crns.join(','), instructor, room, meetingSignature].join('|');
+    if (dedup.has(key)) {
+      return;
+    }
+    dedup.set(key, {
+      courseNumber,
+      crns,
+      instructor,
+      room,
+      meetingSignature,
+    });
+  };
+
+  for (const row of rows) {
+    if (Array.isArray(row.offeringDetails) && row.offeringDetails.length > 0) {
+      for (const offering of row.offeringDetails) {
+        addEntry(offering);
+      }
+      continue;
+    }
+
+    const fallbackCourseNumber = cleanText(row.courseNumber) || 'Course';
+    addEntry({
+      courseNumber: fallbackCourseNumber,
+      crns: uniqueStrings([cleanText(row.crn)]),
+      instructor: cleanText(row.instructor) || 'TBA',
+      room: cleanText(row.room) || 'N/A',
+      meetingSignature: cleanText(row.meetingSignature),
+    });
+  }
+
+  return [...dedup.values()];
+}
+
 function isGenericCourseTitle(title) {
   const normalized = cleanText(title)
     .toLowerCase()
@@ -1408,6 +1451,15 @@ function parseRowsFromHtml(html, rawUrl) {
           crns: uniqueStrings([cleanText(cells[1])]),
         },
       ],
+      offeringDetails: [
+        {
+          courseNumber: parsedCourseNumber.courseNumber,
+          crns: uniqueStrings([cleanText(cells[1])]),
+          instructor: normalizeInstructor(cells[6]),
+          room: cleanText(cells[7]),
+          meetingSignature: meetingSignature(meetings),
+        },
+      ],
     };
 
     rows.push(parsedRow);
@@ -1497,6 +1549,7 @@ function mergeRows(rows, fallbackCourseNumber = null) {
   const commentDetails = buildCommentDetails(sorted);
   const instructorDetails = buildInstructorDetails(sorted);
   const titleDetails = buildTitleDetails(sorted);
+  const offeringDetails = buildOfferingDetails(sorted);
   const meetings = uniqueMeetings(sorted.flatMap((row) => row.meetings ?? []));
   const mergedMeetingSignature = meetingSignature(meetings);
   const relationTypes = uniqueStrings(sorted.map((row) => row.relationType));
@@ -1536,6 +1589,7 @@ function mergeRows(rows, fallbackCourseNumber = null) {
     instructorDetails,
     titleDetails,
     registrationDetails,
+    offeringDetails,
     crossListed: sorted.length > 1,
     sourceRows: sorted.map((row) => row.id),
   };
