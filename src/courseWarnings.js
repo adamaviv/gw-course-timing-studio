@@ -4,6 +4,8 @@ const WARNING_CODES = {
   MISSING_CROSSLIST_4XXX_6XXX: 'MISSING_CROSSLIST_4XXX_6XXX',
   INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES: 'INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES',
   INCONSISTENT_CROSSLISTING_BY_SECTION: 'INCONSISTENT_CROSSLISTING_BY_SECTION',
+  INSTRUCTOR_TBA: 'INSTRUCTOR_TBA',
+  CLASSROOM_TBA: 'CLASSROOM_TBA',
 };
 
 function normalizeText(value) {
@@ -36,6 +38,29 @@ function isPlaceholderInstructorToken(token) {
     return true;
   }
   if (normalized === 'to be announced') {
+    return true;
+  }
+  return false;
+}
+
+function normalizeRoomToken(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isPlaceholderRoomToken(token) {
+  const normalized = normalizeRoomToken(token);
+  if (!normalized) {
+    return true;
+  }
+  const placeholderTokens = new Set(['tba', 'tbd', 'arranged', 'na', 'n a', 'none', 'unknown']);
+  if (placeholderTokens.has(normalized)) {
+    return true;
+  }
+  if (normalized === 'to be announced' || normalized === 'not assigned') {
     return true;
   }
   return false;
@@ -250,6 +275,52 @@ export function buildCourseWarnings(courses = []) {
   const warningsByCourseId = new Map();
   const warningKeySetByCourseId = new Map();
   const schedulableCourses = courses.filter((course) => isSchedulableCourse(course));
+
+  for (const course of schedulableCourses) {
+    const instructorEntries = uniqueSorted(
+      [
+        ...((course?.instructorDetails ?? []).map((entry) => normalizeText(entry?.instructor)).filter(Boolean)),
+        normalizeText(course?.instructor),
+      ].filter(Boolean)
+    );
+    const tbaInstructors = instructorEntries.filter((instructor) => isPlaceholderInstructorToken(instructor));
+    if (tbaInstructors.length > 0) {
+      const warning = {
+        id: buildWarningId(
+          course,
+          WARNING_CODES.INSTRUCTOR_TBA,
+          `instructor-tba:${tbaInstructors.map((entry) => normalizeInstructorToken(entry)).join('|')}`
+        ),
+        code: WARNING_CODES.INSTRUCTOR_TBA,
+        title: 'Instructor TBA',
+        description: 'This class has no assigned instructor yet.',
+        evidence: tbaInstructors,
+      };
+      addWarning(warningsByCourseId, warningKeySetByCourseId, course, warning);
+    }
+
+    const roomEntries = uniqueSorted(
+      [
+        ...offeringDetailsForCourse(course).map((offering) => normalizeText(offering?.room)).filter(Boolean),
+        normalizeText(course?.room),
+      ].filter(Boolean)
+    );
+    const tbaRooms = roomEntries.filter((room) => isPlaceholderRoomToken(room));
+    if (tbaRooms.length > 0) {
+      const warning = {
+        id: buildWarningId(
+          course,
+          WARNING_CODES.CLASSROOM_TBA,
+          `classroom-tba:${tbaRooms.map((entry) => normalizeRoomToken(entry)).join('|')}`
+        ),
+        code: WARNING_CODES.CLASSROOM_TBA,
+        title: 'Classroom TBA',
+        description: 'This class has no assigned classroom yet.',
+        evidence: tbaRooms,
+      };
+      addWarning(warningsByCourseId, warningKeySetByCourseId, course, warning);
+    }
+  }
 
   for (const course of schedulableCourses) {
     const isCrossListed =

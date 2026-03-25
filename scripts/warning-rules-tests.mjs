@@ -170,6 +170,24 @@ function run() {
     meetings: [{ day: 'R', startMin: 960, endMin: 1110, startLabel: '4:00 PM', endLabel: '6:30 PM' }],
     meetingSignature: 'R:960-1110',
   });
+  const tbaRoomCourse = createCourse('room-tba-1', {
+    courseNumber: 'CSCI 7400',
+    registrationDetails: [{ courseNumber: 'CSCI 7400', sections: ['12'], crns: ['74000'] }],
+    instructor: 'Stone, A',
+    instructorDetails: [{ courseNumber: 'CSCI 7400', instructor: 'Stone, A' }],
+    room: 'TBA',
+    offeringDetails: [
+      {
+        courseNumber: 'CSCI 7400',
+        crns: ['74000'],
+        instructor: 'Stone, A',
+        room: 'TBA',
+        meetingSignature: 'M:540-615',
+      },
+    ],
+    meetings: [{ day: 'M', startMin: 540, endMin: 615, startLabel: '9:00 AM', endLabel: '10:15 AM' }],
+    meetingSignature: 'M:540-615',
+  });
 
   const warningMap = buildCourseWarnings([
     crossMismatchCourse,
@@ -184,6 +202,7 @@ function run() {
     missingSection81Only,
     tbaCourseA,
     tbaCourseB,
+    tbaRoomCourse,
   ]);
 
   assert(
@@ -236,6 +255,18 @@ function run() {
     !warningCodesForCourse(warningMap, 'tba-2').has(WARNING_CODES.INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES),
     'Did not expect instructor-time warning for TBA instructor (course B).'
   );
+  assert(
+    warningCodesForCourse(warningMap, 'tba-1').has(WARNING_CODES.INSTRUCTOR_TBA),
+    'Expected Instructor TBA warning for TBA course A.'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'tba-2').has(WARNING_CODES.INSTRUCTOR_TBA),
+    'Expected Instructor TBA warning for TBA course B.'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'room-tba-1').has(WARNING_CODES.CLASSROOM_TBA),
+    'Expected Classroom TBA warning when room is TBA.'
+  );
 
   const warningMapRepeat = buildCourseWarnings([
     crossMismatchCourse,
@@ -250,6 +281,7 @@ function run() {
     missingSection81Only,
     tbaCourseA,
     tbaCourseB,
+    tbaRoomCourse,
   ]);
   for (const [courseId, warnings] of warningMap.entries()) {
     const repeatWarnings = warningMapRepeat.get(courseId) ?? [];
