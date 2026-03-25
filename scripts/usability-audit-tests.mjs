@@ -620,7 +620,7 @@ const STEPS = [
       await warnedRow.locator('.course-info-link-top').click();
       const dialog = page.getByRole('dialog', { name: 'Course details' });
       await dialog.waitFor({ timeout: 10000 });
-      await dialog.getByText('Warnings').waitFor({ timeout: 10000 });
+      await dialog.locator('.detail-warning-notes > strong').filter({ hasText: 'Warnings' }).waitFor({ timeout: 10000 });
 
       const dismissButton = dialog.getByRole('button', { name: 'Dismiss warning' }).first();
       await dismissButton.click();

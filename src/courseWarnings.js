@@ -1,7 +1,9 @@
 const WARNING_CODES = {
   CROSSLIST_METADATA_MISMATCH: 'CROSSLIST_METADATA_MISMATCH',
+  CROSSLIST_DIFFERENT_ROOMS: 'CROSSLIST_DIFFERENT_ROOMS',
   MULTI_DAY_2P5_HOUR_PATTERN: 'MULTI_DAY_2P5_HOUR_PATTERN',
   MISSING_CROSSLIST_4XXX_6XXX: 'MISSING_CROSSLIST_4XXX_6XXX',
+  SAME_INSTRUCTOR_SAME_TIME_NOT_CROSSLINKED: 'SAME_INSTRUCTOR_SAME_TIME_NOT_CROSSLINKED',
   INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES: 'INSTRUCTOR_2P5H_SAME_DAY_DIFFERENT_TIMES',
   INCONSISTENT_CROSSLISTING_BY_SECTION: 'INCONSISTENT_CROSSLISTING_BY_SECTION',
   INSTRUCTOR_TBA: 'INSTRUCTOR_TBA',
@@ -336,8 +338,28 @@ export function buildCourseWarnings(courses = []) {
     }
 
     const instructorTokens = uniqueSorted(offerings.map((offering) => normalizeInstructorToken(offering.instructor)));
-    const roomTokens = uniqueSorted(offerings.map((offering) => normalizeToken(offering.room)));
+    const roomTokens = uniqueSorted(offerings.map((offering) => normalizeRoomToken(offering.room)));
     const meetingTokens = uniqueSorted(offerings.map((offering) => normalizeToken(offering.meetingSignature)));
+
+    const sortedOfferings = [...offerings].sort((left, right) =>
+      `${left.courseNumber}|${left.crns.join(',')}`.localeCompare(`${right.courseNumber}|${right.crns.join(',')}`)
+    );
+    if (roomTokens.length > 1) {
+      const roomFingerprint = `cross-room-mismatch:${sortedOfferings
+        .map((offering) => `${offering.courseNumber}|${offering.crns.join(',')}|${normalizeRoomToken(offering.room)}`)
+        .join('||')}`;
+      const roomWarning = {
+        id: buildWarningId(course, WARNING_CODES.CROSSLIST_DIFFERENT_ROOMS, roomFingerprint),
+        code: WARNING_CODES.CROSSLIST_DIFFERENT_ROOMS,
+        title: 'Cross-Listed Room Mismatch',
+        description: 'Cross-listed offerings list different room locations.',
+        evidence: sortedOfferings.map(
+          (offering) =>
+            `${offering.courseNumber} (${offering.crns.join(', ') || 'CRN N/A'}): ${offering.room || 'Room N/A'}`
+        ),
+      };
+      addWarning(warningsByCourseId, warningKeySetByCourseId, course, roomWarning);
+    }
 
     const mismatchFields = [];
     if (instructorTokens.length > 1) {
@@ -353,9 +375,6 @@ export function buildCourseWarnings(courses = []) {
       continue;
     }
 
-    const sortedOfferings = [...offerings].sort((left, right) =>
-      `${left.courseNumber}|${left.crns.join(',')}`.localeCompare(`${right.courseNumber}|${right.crns.join(',')}`)
-    );
     const fingerprint = `cross-mismatch:${mismatchFields.join(',')}:${sortedOfferings
       .map((offering) => `${offering.courseNumber}|${offering.crns.join(',')}|${offering.instructor}|${offering.room}|${offering.meetingSignature}`)
       .join('||')}`;
@@ -461,6 +480,72 @@ export function buildCourseWarnings(courses = []) {
         title: 'Possible Missing 4XXX/6XXX Cross-List',
         description: 'A 4XXX and 6XXX pairing with matching subject suffix, instructor, and meeting time was found without cross-list metadata.',
         evidence: counterpartLabels,
+      };
+      addWarning(warningsByCourseId, warningKeySetByCourseId, entry.course, warning);
+    }
+  }
+
+  const instructorTimeBuckets = new Map();
+  for (const course of schedulableCourses) {
+    const relationType = normalizeText(course?.relationType).toLowerCase();
+    if (relationType === 'linked') {
+      continue;
+    }
+    const instructors = instructorTokensForCourse(course).filter((token) => !isPlaceholderInstructorToken(token));
+    const meetings = Array.isArray(course?.meetings) ? course.meetings : [];
+    if (instructors.length === 0 || meetings.length === 0) {
+      continue;
+    }
+
+    for (const instructorToken of instructors) {
+      for (const meeting of meetings) {
+        const timeToken = meetingToken(meeting);
+        if (!timeToken) {
+          continue;
+        }
+        const bucketKey = `${instructorToken}|${timeToken}`;
+        const bucket = instructorTimeBuckets.get(bucketKey) ?? [];
+        bucket.push({
+          course,
+          meetingLabel: meetingLabel(meeting),
+          courseLabel: courseDisplayLabel(course),
+        });
+        instructorTimeBuckets.set(bucketKey, bucket);
+      }
+    }
+  }
+
+  for (const [bucketKey, bucket] of instructorTimeBuckets.entries()) {
+    const byCourse = new Map();
+    for (const entry of bucket) {
+      const existing = byCourse.get(entry.course.id) ?? {
+        course: entry.course,
+        meetingLabels: new Set(),
+        courseLabel: entry.courseLabel,
+      };
+      existing.meetingLabels.add(entry.meetingLabel);
+      byCourse.set(entry.course.id, existing);
+    }
+    const uniqueEntries = [...byCourse.values()];
+    if (uniqueEntries.length < 2) {
+      continue;
+    }
+
+    for (const entry of uniqueEntries) {
+      const counterparts = uniqueEntries.filter((candidate) => candidate.course.id !== entry.course.id);
+      if (counterparts.length === 0) {
+        continue;
+      }
+      const meetingEvidence = uniqueSorted([...entry.meetingLabels]).join(', ') || bucketKey.split('|')[1] || 'Time N/A';
+      const counterpartLabels = uniqueSorted(counterparts.map((counterpart) => counterpart.courseLabel));
+      const fingerprint = `${bucketKey}|own:${entry.courseLabel}|counterparts:${counterpartLabels.join('||')}`;
+      const warning = {
+        id: buildWarningId(entry.course, WARNING_CODES.SAME_INSTRUCTOR_SAME_TIME_NOT_CROSSLINKED, fingerprint),
+        code: WARNING_CODES.SAME_INSTRUCTOR_SAME_TIME_NOT_CROSSLINKED,
+        title: 'Same Instructor & Time Without Cross-Link',
+        description:
+          'Another class has the same instructor and meeting time but is not linked/cross-listed with this class.',
+        evidence: [`Meeting: ${meetingEvidence}`, ...counterpartLabels],
       };
       addWarning(warningsByCourseId, warningKeySetByCourseId, entry.course, warning);
     }

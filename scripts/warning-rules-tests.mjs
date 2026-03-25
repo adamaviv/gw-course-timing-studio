@@ -59,6 +59,30 @@ function run() {
       },
     ],
   });
+  const crossRoomMismatchCourse = createCourse('cross-room-mismatch', {
+    relationType: 'cross-listed',
+    courseNumber: 'CSCI 4333 / CSCI 6333',
+    registrationDetails: [
+      { courseNumber: 'CSCI 4333', sections: ['10'], crns: ['43330'] },
+      { courseNumber: 'CSCI 6333', sections: ['10'], crns: ['63330'] },
+    ],
+    offeringDetails: [
+      {
+        courseNumber: 'CSCI 4333',
+        crns: ['43330'],
+        instructor: 'Ng, M',
+        room: 'SEH 101',
+        meetingSignature: 'W:600-675',
+      },
+      {
+        courseNumber: 'CSCI 6333',
+        crns: ['63330'],
+        instructor: 'Ng, M',
+        room: 'SEH 201',
+        meetingSignature: 'W:600-675',
+      },
+    ],
+  });
 
   const multiDayTwoPointFive = createCourse('multi-2p5', {
     courseNumber: 'CSCI 6990',
@@ -188,9 +212,48 @@ function run() {
     meetings: [{ day: 'M', startMin: 540, endMin: 615, startLabel: '9:00 AM', endLabel: '10:15 AM' }],
     meetingSignature: 'M:540-615',
   });
+  const sameInstructorTimeNoCrossA = createCourse('same-time-no-cross-1', {
+    courseNumber: 'CSCI 4111',
+    section: '12',
+    registrationDetails: [{ courseNumber: 'CSCI 4111', sections: ['12'], crns: ['41110'] }],
+    instructor: 'Rivera, L',
+    instructorDetails: [{ courseNumber: 'CSCI 4111', instructor: 'Rivera, L' }],
+    meetings: [{ day: 'T', startMin: 720, endMin: 795, startLabel: '12:00 PM', endLabel: '1:15 PM' }],
+    meetingSignature: 'T:720-795',
+  });
+  const sameInstructorTimeNoCrossB = createCourse('same-time-no-cross-2', {
+    courseNumber: 'CSCI 6111',
+    section: '22',
+    registrationDetails: [{ courseNumber: 'CSCI 6111', sections: ['22'], crns: ['61110'] }],
+    instructor: 'Rivera, L',
+    instructorDetails: [{ courseNumber: 'CSCI 6111', instructor: 'Rivera, L' }],
+    meetings: [{ day: 'T', startMin: 720, endMin: 795, startLabel: '12:00 PM', endLabel: '1:15 PM' }],
+    meetingSignature: 'T:720-795',
+  });
+  const linkedSameTimePrimary = createCourse('same-time-linked-primary', {
+    courseNumber: 'CSCI 2110',
+    section: '10',
+    registrationDetails: [{ courseNumber: 'CSCI 2110', sections: ['10'], crns: ['21100'] }],
+    instructor: 'Diaz, M',
+    instructorDetails: [{ courseNumber: 'CSCI 2110', instructor: 'Diaz, M' }],
+    meetings: [{ day: 'W', startMin: 900, endMin: 975, startLabel: '3:00 PM', endLabel: '4:15 PM' }],
+    meetingSignature: 'W:900-975',
+  });
+  const linkedSameTimeChild = createCourse('same-time-linked-child', {
+    relationType: 'linked',
+    linkedParentCrn: '21100',
+    courseNumber: 'CSCI 2110L',
+    section: '30',
+    registrationDetails: [{ courseNumber: 'CSCI 2110L', sections: ['30'], crns: ['21130'] }],
+    instructor: 'Diaz, M',
+    instructorDetails: [{ courseNumber: 'CSCI 2110L', instructor: 'Diaz, M' }],
+    meetings: [{ day: 'W', startMin: 900, endMin: 975, startLabel: '3:00 PM', endLabel: '4:15 PM' }],
+    meetingSignature: 'W:900-975',
+  });
 
   const warningMap = buildCourseWarnings([
     crossMismatchCourse,
+    crossRoomMismatchCourse,
     multiDayTwoPointFive,
     missingCrosslist4xxx,
     missingCrosslist6xxx,
@@ -203,11 +266,23 @@ function run() {
     tbaCourseA,
     tbaCourseB,
     tbaRoomCourse,
+    sameInstructorTimeNoCrossA,
+    sameInstructorTimeNoCrossB,
+    linkedSameTimePrimary,
+    linkedSameTimeChild,
   ]);
 
   assert(
     warningCodesForCourse(warningMap, 'cross-mismatch').has(WARNING_CODES.CROSSLIST_METADATA_MISMATCH),
     'Expected cross-listed metadata mismatch warning.'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'cross-mismatch').has(WARNING_CODES.CROSSLIST_DIFFERENT_ROOMS),
+    'Expected explicit cross-listed room mismatch warning.'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'cross-room-mismatch').has(WARNING_CODES.CROSSLIST_DIFFERENT_ROOMS),
+    'Expected cross-listed room mismatch warning when room is the only differing field.'
   );
   assert(
     warningCodesForCourse(warningMap, 'multi-2p5').has(WARNING_CODES.MULTI_DAY_2P5_HOUR_PATTERN),
@@ -267,9 +342,34 @@ function run() {
     warningCodesForCourse(warningMap, 'room-tba-1').has(WARNING_CODES.CLASSROOM_TBA),
     'Expected Classroom TBA warning when room is TBA.'
   );
+  assert(
+    warningCodesForCourse(warningMap, 'same-time-no-cross-1').has(
+      WARNING_CODES.SAME_INSTRUCTOR_SAME_TIME_NOT_CROSSLINKED
+    ),
+    'Expected same-instructor/same-time warning for first non-cross-linked class.'
+  );
+  assert(
+    warningCodesForCourse(warningMap, 'same-time-no-cross-2').has(
+      WARNING_CODES.SAME_INSTRUCTOR_SAME_TIME_NOT_CROSSLINKED
+    ),
+    'Expected same-instructor/same-time warning for second non-cross-linked class.'
+  );
+  assert(
+    !warningCodesForCourse(warningMap, 'same-time-linked-primary').has(
+      WARNING_CODES.SAME_INSTRUCTOR_SAME_TIME_NOT_CROSSLINKED
+    ),
+    'Did not expect same-instructor/same-time warning for linked primary course.'
+  );
+  assert(
+    !warningCodesForCourse(warningMap, 'same-time-linked-child').has(
+      WARNING_CODES.SAME_INSTRUCTOR_SAME_TIME_NOT_CROSSLINKED
+    ),
+    'Did not expect same-instructor/same-time warning for linked child course.'
+  );
 
   const warningMapRepeat = buildCourseWarnings([
     crossMismatchCourse,
+    crossRoomMismatchCourse,
     multiDayTwoPointFive,
     missingCrosslist4xxx,
     missingCrosslist6xxx,
@@ -282,6 +382,10 @@ function run() {
     tbaCourseA,
     tbaCourseB,
     tbaRoomCourse,
+    sameInstructorTimeNoCrossA,
+    sameInstructorTimeNoCrossB,
+    linkedSameTimePrimary,
+    linkedSameTimeChild,
   ]);
   for (const [courseId, warnings] of warningMap.entries()) {
     const repeatWarnings = warningMapRepeat.get(courseId) ?? [];
