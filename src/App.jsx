@@ -2240,6 +2240,21 @@ function App() {
     importFileInputRef.current?.click();
   }
 
+  function renderImportSampleLinks() {
+    return (
+      <p className="import-sample-links">
+        Samples:{' '}
+        <a href="/sample-import-schema-v1.csv" download>
+          CSV
+        </a>{' '}
+        |{' '}
+        <a href="/sample-import-schema-v1.xlsx" download>
+          XLSX
+        </a>
+      </p>
+    );
+  }
+
   async function onImportSpreadsheetChange(event) {
     const file = event.target?.files?.[0] ?? null;
     if (event.target) {
@@ -3848,6 +3863,7 @@ function App() {
                   onChange={onImportSpreadsheetChange}
                 />
                 <p className="import-note">Import a spreadsheet to create a course frame and auto-select classes.</p>
+                {renderImportSampleLinks()}
                 {importStatus ? (
                   <p className={`import-status import-status-${importStatus.kind}`}>{importStatus.message}</p>
                 ) : null}
@@ -3884,6 +3900,7 @@ function App() {
                     onChange={onImportSpreadsheetChange}
                   />
                   <p className="import-note">Adds a new imported frame and auto-selects schedulable classes.</p>
+                  {renderImportSampleLinks()}
                   {importStatus ? (
                     <p className={`import-status import-status-${importStatus.kind}`}>{importStatus.message}</p>
                   ) : null}

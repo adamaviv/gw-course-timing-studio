@@ -1192,6 +1192,19 @@ button:disabled {
   text-align: right;
 }
 
+.import-sample-links {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.15;
+  color: #345945;
+  text-align: right;
+}
+
+.import-sample-links a {
+  color: #0e5b2a;
+  font-weight: 700;
+}
+
 .import-status {
   margin: 0;
   font-size: 0.68rem;
@@ -2429,7 +2442,8 @@ body.print-prep .print-detail-card:last-child {
   }
 
   .import-note,
-  .import-status {
+  .import-status,
+  .import-sample-links {
     text-align: left;
   }
 }
