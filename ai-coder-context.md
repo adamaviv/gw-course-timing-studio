@@ -39,6 +39,7 @@ Primary user outcomes:
 - Planned import/export design draft: `import-export-plan.md`
 - Spreadsheet schema constants: `src/spreadsheetSchema.js`
 - Spreadsheet codec (CSV/XLSX parse+serialize): `src/spreadsheetCodec.js`
+- Imported spreadsheet row-to-course mapper: `src/importedFrameMapper.js`
 - Spreadsheet codec tests: `scripts/spreadsheet-codec-tests.mjs`
 - Phase 1 review samples:
   - `sample-import-schema-v1.csv`
@@ -78,6 +79,7 @@ Server emits merged/normalized course rows including:
 
 ## Key UX Behavior
 - Course list has per-subject frames and a dedicated `Selected` frame.
+- Tools panel includes spreadsheet import (`CSV`/`XLSX`) for additive imported frames.
 - Day focus toggle supports single-day expansion and week reset.
 - Details modal is anchored near clicked item and dismissible by outside click or X.
 - Print/PDF preview supports calendar and selected-course-list toggles.
@@ -88,7 +90,7 @@ Server emits merged/normalized course rows including:
 
 ## Share URL Model (current)
 Primary query keys in `src/App.jsx`:
-- `share_v`, `share_t`, `share_f`, `share_sel`
+- `share_v`, `share_t`, `share_f`, `share_sel`, `share_imp_sel`
 - `share_only_sel`, `share_show_cancel`, `share_day`, `share_preview`
 - compressed fallback: `share_z`
 
@@ -96,6 +98,10 @@ Behavior:
 - Auto-sync updates URL while selections are active.
 - Readable format preferred; compressed fallback used for long URLs.
 - Restore handles malformed payloads with user-facing errors.
+- Imported selections are tracked separately from GW/API selections:
+  - `share_sel`: GW/API selected CRNs
+  - `share_imp_sel`: imported selected CRNs
+- Compatibility behavior: imported-only links can omit/ignore frame loading; restore shows guidance to re-import spreadsheet classes when needed.
 
 ## Search DSL (current)
 Implemented in `src/searchDsl.js` with tests in `scripts/search-dsl-tests.mjs`.
@@ -183,18 +189,30 @@ Major completed evolution in this codebase includes:
 - Security and usability CI suites with mocked usability backend support.
 
 ## Known In-Progress / Planned Work
-- Spreadsheet import/export capability is under planning in `import-export-plan.md`.
+- Spreadsheet import/export capability is being implemented in phases from `import-export-plan.md`.
 - Import/export UX plan includes publishing downloadable sample spreadsheets from the site so end users can edit and re-import them.
 - Current progress on branch `import-export`:
-  - Dependency gate passed using `exceljs` + `fflate` (`npm audit --omit=dev --audit-level=high` clean).
+  - Dependency gate selected `exceljs` + `fflate`; security gate at `audit-level=high` passes.
   - Phase 1 schema/codec foundation implemented and tested.
+  - Phase 2 import UX + imported frame model implemented:
+    - Tools action to import `.csv`/`.xlsx` files.
+    - Atomic validation errors surfaced to UI with row/column messages.
+    - Imported rows mapped into existing frame/course model and rendered in list/calendar/modal/print.
+    - Imported frame/course source badges and source metadata are shown.
+    - Schedulable imported courses auto-select after import.
+    - Share payload separation for imported vs GW selections (`share_imp_sel`).
+    - Imported-only share reload no longer forces a GW subject frame load.
+    - UI fixes for course-frame header overlap, horizontal overflow, and calendar time-label alignment.
   - Schema decisions currently encoded:
     - `#meta` preamble + optional `#comment` rows
     - explicit linked-row CRN requirement
     - `crosslist_crns` list column for cross-listed relationships
     - section band validation (`1000-4999 => 10-79`, `6000+ => 80+`)
-  - Sample CSV/XLSX files are generated in repo root for review and planned in-app download.
-- Next implementation phase: **Phase 2 (Import UX + Imported Frame Model)** from `import-export-plan.md`.
+  - Relation validation strengthened for cross-listed groups:
+    - group membership consistency across `crosslist_group` / `crosslist_crns`
+    - unresolved/mismatched CRNs fail atomically
+  - Sample CSV/XLSX files are generated in repo root for review and planned in-app download links.
+- Next implementation phase: **Phase 3 (Export UX: Global + Per-Frame)** from `import-export-plan.md`.
 - If implementing this feature, re-check URL-share limits and payload strategy early.
 
 ## New Agent Kickoff Prompt Template
@@ -230,3 +248,4 @@ If developer says no:
 - 2026-03-26: Updated PATH guidance to reflect verified default `zsh` environment (no manual PATH override required).
 - 2026-03-26: Added import/export planning note to provide downloadable sample spreadsheets in-app for end-user editing workflows.
 - 2026-03-26: Added import/export implementation status (Phase 1 complete on `import-export`), schema rules, sample file references, and next phase guidance.
+- 2026-03-26: Updated status to Phase 2 complete, documented import UX/source badges/share `share_imp_sel` behavior, overflow/alignment fixes, and set next phase to Phase 3 export UX.
