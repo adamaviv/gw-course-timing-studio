@@ -206,7 +206,10 @@ function commentsByCourseNumber(course) {
   for (const entry of commentEntriesForCourse(course)) {
     const key = String(entry.courseNumber || '').trim() || String(course.courseNumber || '').trim() || 'Course';
     const bucket = mapping.get(key) ?? [];
-    const text = String(entry.text || '').trim();
+    const text = String(entry.text || '')
+      .trim()
+      .replace(/^comments\s*:\s*/i, '')
+      .trim();
     if (text) {
       bucket.push(text);
       mapping.set(key, bucket);
