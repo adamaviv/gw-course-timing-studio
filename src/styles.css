@@ -368,6 +368,11 @@ button:disabled {
   overflow: visible;
 }
 
+.tools-group-import {
+  justify-items: end;
+  min-width: 260px;
+}
+
 .tools-group-print {
   justify-items: end;
 }
@@ -607,6 +612,7 @@ button:disabled {
   max-height: 67vh;
   overflow: auto;
   padding-right: 0.2rem;
+  overflow-x: hidden;
 }
 
 .subject-frames {
@@ -616,6 +622,7 @@ button:disabled {
   max-height: 67vh;
   overflow: auto;
   padding-right: 0.2rem;
+  overflow-x: hidden;
 }
 
 .subject-frame {
@@ -623,6 +630,7 @@ button:disabled {
   border-radius: 12px;
   background: #f7fcfb;
   padding: 0.6rem;
+  min-width: 0;
 }
 
 .selected-frame {
@@ -634,30 +642,54 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
-  align-items: center;
-  flex-wrap: nowrap;
+  align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .subject-frame-title-wrap {
   display: flex;
   align-items: center;
   gap: 0.45rem;
-  flex: 1 1 auto;
+  flex: 1 1 220px;
   min-width: 0;
-  white-space: nowrap;
 }
 
 .subject-frame-actions {
   display: flex;
   gap: 0.35rem;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   margin-left: auto;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.subject-frame-actions .course-info-link {
+  margin-left: 0;
 }
 
 .subject-frame-header h3 {
   margin: 0;
   font-size: 0.96rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frame-source-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #9fc6a8;
+  border-radius: 999px;
+  padding: 0.04rem 0.34rem;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #225033;
+  background: #ebf7ee;
   white-space: nowrap;
 }
 
@@ -698,6 +730,10 @@ button:disabled {
   margin: 0.24rem 0 0;
   color: #4d5f68;
   font-size: 0.81rem;
+}
+
+.subject-frame-meta-source {
+  color: #335e46;
 }
 
 .subject-frame-controls {
@@ -741,10 +777,13 @@ button:disabled {
   gap: 0.55rem;
   cursor: pointer;
   background: #fffffff2;
+  min-width: 0;
 }
 
 .course-item-linked {
   margin-left: 1.15rem;
+  width: calc(100% - 1.15rem);
+  max-width: calc(100% - 1.15rem);
   border-left: 5px solid #2c6475;
   background: linear-gradient(90deg, #e8f4fa 0%, #f6fbff 40%, #ffffff 100%);
   box-shadow: inset 0 0 0 1px #bfd6df;
@@ -778,10 +817,13 @@ button:disabled {
   align-items: baseline;
   gap: 0.55rem;
   padding-right: 4.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .course-content {
   position: relative;
+  min-width: 0;
 }
 
 .course-info-link {
@@ -813,10 +855,25 @@ button:disabled {
   justify-content: flex-end;
   gap: 0.35rem;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .course-action-button {
   margin-left: 0;
+}
+
+.course-source-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #a2c9aa;
+  border-radius: 999px;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #2a5a3d;
+  background: #edf8f0;
 }
 
 .linked-selection-toggle {
@@ -907,6 +964,14 @@ button:disabled {
   margin: 0.06rem 0;
   color: #4d5f68;
   font-size: 0.84rem;
+}
+
+.course-name,
+.course-meta,
+.course-meeting,
+.course-linked-note {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .course-linked-note {
@@ -1033,6 +1098,16 @@ button:disabled {
   margin-top: 0.1rem;
 }
 
+.import-controls-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #295434;
+  line-height: 1.1;
+  margin-top: 0.1rem;
+}
+
 .share-controls-title {
   font-size: 0.72rem;
   font-weight: 700;
@@ -1080,9 +1155,56 @@ button:disabled {
 .print-preview-button,
 .print-trigger-button,
 .share-trigger-button,
-.save-state-trigger-button {
+.save-state-trigger-button,
+.import-trigger-button {
   width: 3.18rem;
   height: 1.76rem;
+}
+
+.import-trigger-button {
+  width: 4rem;
+  background: #2f7d44;
+  border-color: #2a6f3d;
+  color: #fff;
+  font-size: 0.69rem;
+}
+
+.import-trigger-button:hover {
+  background: #286a39;
+}
+
+.import-trigger-button:disabled {
+  background: #a6c7ae;
+  border-color: #92b99c;
+  color: #eef7f0;
+  cursor: not-allowed;
+}
+
+.import-file-input {
+  display: none;
+}
+
+.import-note {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.15;
+  color: #2f5540;
+  text-align: right;
+}
+
+.import-status {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.import-status-success {
+  color: #1f5832;
+}
+
+.import-status-error {
+  color: #7a2522;
 }
 
 .save-state-trigger-button {
@@ -1542,7 +1664,6 @@ button:disabled {
 
 .time-label {
   position: absolute;
-  transform: translateY(-0.5rem);
   color: #4f606a;
   font-size: 0.77rem;
   line-height: 1;
@@ -2304,6 +2425,11 @@ body.print-prep .print-detail-card:last-child {
   }
 
   .save-state-note {
+    text-align: left;
+  }
+
+  .import-note,
+  .import-status {
     text-align: left;
   }
 }

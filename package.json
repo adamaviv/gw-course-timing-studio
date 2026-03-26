@@ -12,6 +12,7 @@
     "test": "npm run test:security",
     "test:security": "npm run test:security-deps && npm run test:security-phase1 && npm run test:security-phase2 && npm run test:security-phase3 && npm run test:security-phase4 && npm run test:security-phase5 && npm run test:security-phase6 && npm run test:security-phase7 && npm run test:security-phase8 && npm run test:security-phase9 && npm run test:security-phase10 && npm run test:security-phase12",
     "test:search-dsl": "node scripts/search-dsl-tests.mjs",
+    "test:spreadsheet-codec": "node scripts/spreadsheet-codec-tests.mjs",
     "test:warnings": "node scripts/warning-rules-tests.mjs",
     "test:usability": "node scripts/search-dsl-tests.mjs && node scripts/warning-rules-tests.mjs && node scripts/usability-audit-tests.mjs",
     "test:security-deps": "npm audit --omit=dev --audit-level=high",
@@ -30,7 +31,9 @@
   "dependencies": {
     "cheerio": "^1.1.2",
     "cors": "^2.8.5",
+    "exceljs": "^4.4.0",
     "express": "^5.1.0",
+    "fflate": "^0.8.2",
     "firebase": "^12.10.0",
     "helmet": "^8.1.0",
     "lz-string": "^1.5.0",

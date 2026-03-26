@@ -3,11 +3,13 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 import { getRecoveryReloadHint } from '../shared/recoveryHints.js';
 import { buildCourseWarnings } from './courseWarnings.js';
+import { buildImportedCoursesFromSpreadsheetRows } from './importedFrameMapper.js';
 import {
   extractNormalizedCourseNumbers,
   matchesParsedCourseSearchQuery,
   parseCourseSearchQuery,
 } from './searchDsl.js';
+import { parseSpreadsheetCsv, parseSpreadsheetXlsxBuffer } from './spreadsheetCodec.js';
 
 // Update these defaults each scheduling cycle.
 const DEFAULT_SELECTION = {
@@ -66,6 +68,7 @@ const SHARE_QUERY_PARAM_VERSION = 'share_v';
 const SHARE_QUERY_PARAM_TERM = 'share_t';
 const SHARE_QUERY_PARAM_FRAME = 'share_f';
 const SHARE_QUERY_PARAM_SELECTION = 'share_sel';
+const SHARE_QUERY_PARAM_IMPORTED_SELECTION = 'share_imp_sel';
 const SHARE_QUERY_PARAM_ONLY_SELECTED = 'share_only_sel';
 const SHARE_QUERY_PARAM_SHOW_CANCELLED = 'share_show_cancel';
 const SHARE_QUERY_PARAM_DAY = 'share_day';
@@ -77,6 +80,7 @@ const SHARE_QUERY_KEYS = [
   SHARE_QUERY_PARAM_TERM,
   SHARE_QUERY_PARAM_FRAME,
   SHARE_QUERY_PARAM_SELECTION,
+  SHARE_QUERY_PARAM_IMPORTED_SELECTION,
   SHARE_QUERY_PARAM_ONLY_SELECTED,
   SHARE_QUERY_PARAM_SHOW_CANCELLED,
   SHARE_QUERY_PARAM_DAY,
@@ -92,9 +96,63 @@ const MAX_SHARE_DECOMPRESSED_CHARS = 120_000;
 const MAX_SHARE_FRAME_COUNT = 24;
 const MAX_SHARE_SELECTION_ENTRIES = 1_200;
 const MAX_SHARE_CRN_COUNT = 4_000;
+const IMPORT_STATUS_RESET_MS = 8000;
 
 function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+function formatSpreadsheetImportErrors(errors, maxItems = 6) {
+  const entries = Array.isArray(errors) ? errors : [];
+  if (entries.length === 0) {
+    return 'Import failed due to an unknown validation error.';
+  }
+  const formatted = entries.slice(0, maxItems).map((entry) => {
+    const rowPrefix = Number.isFinite(entry?.rowNumber) ? `Row ${entry.rowNumber}` : 'File';
+    const column = String(entry?.column || '').trim();
+    const columnText = column ? ` (${column})` : '';
+    const message = String(entry?.message || 'Unknown validation issue.').trim();
+    return `${rowPrefix}${columnText}: ${message}`;
+  });
+  const remaining = entries.length - formatted.length;
+  if (remaining > 0) {
+    formatted.push(`...and ${remaining} additional issue${remaining === 1 ? '' : 's'}.`);
+  }
+  return formatted.join(' | ');
+}
+
+function normalizeSpreadsheetMetaForImport(meta) {
+  const rawMeta = meta && typeof meta === 'object' ? meta : {};
+  const termId = String(rawMeta.term_id || '').trim();
+  const campusId = String(rawMeta.campus_id || '').trim();
+  const subjectId = normalizeSubjectIdValue(rawMeta.subject_id);
+  const subjectLabel = String(rawMeta.subject_label || '').trim() || subjectId;
+  const campusLabel = String(rawMeta.campus_label || '').trim() || campusLabelForCampusId(campusId);
+  const sourceLabel = String(rawMeta.source_label || '').trim();
+  return {
+    termId,
+    campusId,
+    subjectId,
+    subjectLabel,
+    campusLabel,
+    sourceLabel,
+  };
+}
+
+function isCsvImportFile(file) {
+  const fileName = String(file?.name || '').trim().toLowerCase();
+  const mimeType = String(file?.type || '').trim().toLowerCase();
+  return fileName.endsWith('.csv') || mimeType.includes('text/csv') || mimeType === 'text/plain';
+}
+
+function isXlsxImportFile(file) {
+  const fileName = String(file?.name || '').trim().toLowerCase();
+  const mimeType = String(file?.type || '').trim().toLowerCase();
+  return (
+    fileName.endsWith('.xlsx') ||
+    mimeType.includes('spreadsheetml.sheet') ||
+    mimeType.includes('application/vnd.ms-excel')
+  );
 }
 
 function termLabelForTermId(termId) {
@@ -255,6 +313,10 @@ function namespaceCourses(courses, frameKey, frameMeta) {
     frameTermLabel: frameMeta.termLabel,
     frameCampusId: frameMeta.campusId,
     frameCampusLabel: frameMeta.campusLabel,
+    frameSourceType: frameMeta.sourceType || 'gw',
+    frameSourceLabel: frameMeta.sourceLabel || '',
+    sourceType: String(course?.sourceType || '').trim() || frameMeta.sourceType || 'gw',
+    sourceLabel: String(course?.sourceLabel || '').trim() || frameMeta.sourceLabel || '',
   }));
 }
 
@@ -464,6 +526,13 @@ function normalizedCrnListForCourse(course) {
   ].sort();
 }
 
+function isImportedCourse(course) {
+  return (
+    String(course?.sourceType || '').trim().toLowerCase() === 'import' ||
+    String(course?.frameSourceType || '').trim().toLowerCase() === 'import'
+  );
+}
+
 function normalizedCrnListKey(crns) {
   return [...new Set((crns ?? []).map((value) => String(value || '').trim()).filter(Boolean))]
     .sort()
@@ -499,16 +568,14 @@ function parseAndValidateSharePayload(rawPayload) {
     return { error: 'Share payload has an invalid term.' };
   }
 
-  if (!Array.isArray(rawPayload.f) || rawPayload.f.length === 0) {
-    return { error: 'Share payload has no subject frames.' };
-  }
-  if (rawPayload.f.length > MAX_SHARE_FRAME_COUNT) {
+  const rawFrames = Array.isArray(rawPayload.f) ? rawPayload.f : [];
+  if (rawFrames.length > MAX_SHARE_FRAME_COUNT) {
     return { error: 'Share payload includes too many subject frames.' };
   }
 
   const frameByKey = new Map();
   const frames = [];
-  for (const frame of rawPayload.f) {
+  for (const frame of rawFrames) {
     const campusId = String(frame?.c || '').trim();
     const subjectId = normalizeSubjectIdValue(frame?.s);
     if (!isValidShareCampusId(campusId) || !isValidShareSubjectId(subjectId)) {
@@ -598,13 +665,50 @@ function parseAndValidateSharePayload(rawPayload) {
   }
   const dedupedSelectedCrns = [...new Set(selectedCrns)].sort();
 
+  const importedSelectedCrnInput = Array.isArray(rawPayload.isc) ? rawPayload.isc : [];
+  if (importedSelectedCrnInput.length > MAX_SHARE_CRN_COUNT) {
+    return { error: 'Share payload includes too many imported selected CRNs.' };
+  }
+  const importedSelectedCrns = [];
+  for (const rawCrn of importedSelectedCrnInput) {
+    const crn = String(rawCrn || '').trim();
+    if (!crn) {
+      continue;
+    }
+    if (!/^\d{3,10}$/.test(crn)) {
+      return { error: 'Share payload has invalid imported selected class CRNs.' };
+    }
+    importedSelectedCrns.push(crn);
+    if (importedSelectedCrns.length > MAX_SHARE_CRN_COUNT) {
+      return { error: 'Share payload includes too many imported selected CRNs.' };
+    }
+  }
+  const dedupedImportedSelectedCrns = [...new Set(importedSelectedCrns)].sort();
+
+  const hasImportedOnlySelections =
+    dedupedImportedSelectedCrns.length > 0 &&
+    dedupedSelectedCrns.length === 0 &&
+    dedupedSelection.length === 0;
+  const normalizedFrames = hasImportedOnlySelections ? [] : frames;
+
+  if (normalizedFrames.length === 0 && dedupedSelectedCrns.length > 0) {
+    return { error: 'Share payload has selected class CRNs but no subject frames.' };
+  }
+  if (normalizedFrames.length === 0 && dedupedSelection.length > 0) {
+    return { error: 'Share payload has selected class references but no subject frames.' };
+  }
+  if (normalizedFrames.length === 0 && dedupedImportedSelectedCrns.length === 0) {
+    return { error: 'Share payload has no subject frames.' };
+  }
+
   return {
     payload: {
       v: SHARE_STATE_VERSION,
       t: termId,
-      f: frames,
+      f: normalizedFrames,
       sel: dedupedSelection,
       sc: dedupedSelectedCrns,
+      isc: dedupedImportedSelectedCrns,
       ui,
     },
   };
@@ -684,6 +788,7 @@ function parseReadableSharePayload(searchParams) {
     searchParams.has(SHARE_QUERY_PARAM_TERM) ||
     searchParams.has(SHARE_QUERY_PARAM_FRAME) ||
     searchParams.has(SHARE_QUERY_PARAM_SELECTION) ||
+    searchParams.has(SHARE_QUERY_PARAM_IMPORTED_SELECTION) ||
     searchParams.has(SHARE_QUERY_PARAM_ONLY_SELECTED) ||
     searchParams.has(SHARE_QUERY_PARAM_SHOW_CANCELLED) ||
     searchParams.has(SHARE_QUERY_PARAM_DAY) ||
@@ -703,9 +808,6 @@ function parseReadableSharePayload(searchParams) {
   }
 
   const frameTokens = searchParams.getAll(SHARE_QUERY_PARAM_FRAME).map((value) => String(value || '').trim()).filter(Boolean);
-  if (frameTokens.length === 0) {
-    return { error: 'Share payload has no subject frames.' };
-  }
   if (frameTokens.length > MAX_SHARE_FRAME_COUNT) {
     return { error: 'Share payload includes too many subject frames.' };
   }
@@ -768,6 +870,22 @@ function parseReadableSharePayload(searchParams) {
     }
   }
 
+  const importedSelectionTokens = searchParams
+    .getAll(SHARE_QUERY_PARAM_IMPORTED_SELECTION)
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const importedSelectedCrns = [];
+  for (const token of importedSelectionTokens) {
+    const normalizedCrns = parseCrnListText(token);
+    if (!normalizedCrns || normalizedCrns.length === 0) {
+      return { error: 'Share payload has invalid imported selected class CRNs.' };
+    }
+    importedSelectedCrns.push(...normalizedCrns);
+    if (importedSelectedCrns.length > MAX_SHARE_CRN_COUNT) {
+      return { error: 'Share payload includes too many imported selected CRNs.' };
+    }
+  }
+
   const dayText = String(searchParams.get(SHARE_QUERY_PARAM_DAY) || '')
     .trim()
     .toUpperCase();
@@ -784,6 +902,7 @@ function parseReadableSharePayload(searchParams) {
     f: frames,
     sel: selection,
     sc: selectedCrns,
+    isc: importedSelectedCrns,
     ui,
   });
 }
@@ -837,6 +956,9 @@ function buildShareUrlFromPayload(payload, searchValue, baseUrl, maxLength) {
   }
   if (Array.isArray(payload.sc) && payload.sc.length > 0) {
     readableParams.set(SHARE_QUERY_PARAM_SELECTION, payload.sc.join(','));
+  }
+  if (Array.isArray(payload.isc) && payload.isc.length > 0) {
+    readableParams.set(SHARE_QUERY_PARAM_IMPORTED_SELECTION, payload.isc.join(','));
   }
   readableParams.set(SHARE_QUERY_PARAM_ONLY_SELECTED, payload.ui?.onlySel ? '1' : '0');
   readableParams.set(SHARE_QUERY_PARAM_SHOW_CANCELLED, payload.ui?.showCancel ? '1' : '0');
@@ -1052,6 +1174,7 @@ function buildCalendar(courses, activeCourseId) {
 }
 
 function App() {
+  const importFileInputRef = useRef(null);
   const [campusId, setCampusId] = useState(DEFAULT_SELECTION.campusId);
   const [termId, setTermId] = useState(DEFAULT_SELECTION.termId);
   const [subjectId, setSubjectId] = useState(DEFAULT_SELECTION.subjectId);
@@ -1089,6 +1212,8 @@ function App() {
   const [printIncludeSelectedList, setPrintIncludeSelectedList] = useState(true);
   const [shareIncludePreview, setShareIncludePreview] = useState(false);
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState(null);
   const [shareStatus, setShareStatus] = useState(null);
   const [pendingShareRestoreSelection, setPendingShareRestoreSelection] = useState(null);
   const [pendingShareRestorePreview, setPendingShareRestorePreview] = useState(false);
@@ -1247,6 +1372,16 @@ function App() {
     }, SHARE_STATUS_RESET_MS);
     return () => window.clearTimeout(timerId);
   }, [shareStatus]);
+
+  useEffect(() => {
+    if (!importStatus) {
+      return undefined;
+    }
+    const timerId = window.setTimeout(() => {
+      setImportStatus(null);
+    }, IMPORT_STATUS_RESET_MS);
+    return () => window.clearTimeout(timerId);
+  }, [importStatus]);
 
   useEffect(() => {
     if (!isSearchSyntaxOpen) {
@@ -1726,6 +1861,7 @@ function App() {
   }, [calendar.endMin, calendar.startMin]);
 
   const pxPerMin = 1.15;
+  const dayHeaderHeightPx = 30;
   const bodyHeight = Math.max(520, (calendar.endMin - calendar.startMin) * pxPerMin);
 
   function clearDynamicPrintBreaks() {
@@ -1974,6 +2110,164 @@ function App() {
     return message;
   }
 
+  function clearWorkspaceForTermTransition() {
+    setSubjectFrames([]);
+    setSelectedIds(new Set());
+    setExpandedLinkedParentIds(new Set());
+    setAlwaysSelectLinkedFrameKeys(new Set());
+    setCollapsedFrameKeys(new Set());
+    setIsSelectedFrameCollapsed(true);
+    closeCourseDetails();
+  }
+
+  function nextImportedFrameKey(termIdValue, campusIdValue, subjectIdValue) {
+    const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return `${termIdValue}|${campusIdValue}|${subjectIdValue}|import:${nonce}`;
+  }
+
+  async function parseSpreadsheetImportFile(file) {
+    if (isCsvImportFile(file)) {
+      const text = await file.text();
+      return parseSpreadsheetCsv(text);
+    }
+
+    if (isXlsxImportFile(file)) {
+      const buffer = await file.arrayBuffer();
+      return parseSpreadsheetXlsxBuffer(new Uint8Array(buffer));
+    }
+
+    throw new Error('Unsupported file type. Please import a .csv or .xlsx file.');
+  }
+
+  async function importSpreadsheetFrame(file) {
+    const parsedFile = await parseSpreadsheetImportFile(file);
+    if (!parsedFile.ok) {
+      throw new Error(`Import validation failed. ${formatSpreadsheetImportErrors(parsedFile.errors)}`);
+    }
+    if (!Array.isArray(parsedFile.rows) || parsedFile.rows.length === 0) {
+      throw new Error('Import file has no class rows after parsing.');
+    }
+
+    const meta = normalizeSpreadsheetMetaForImport(parsedFile.meta);
+    if (!isValidShareTermId(meta.termId)) {
+      throw new Error('Import metadata is missing a valid 6-digit term_id.');
+    }
+    if (!isValidShareCampusId(meta.campusId)) {
+      throw new Error('Import metadata has an invalid campus_id.');
+    }
+    if (!isValidShareSubjectId(meta.subjectId)) {
+      throw new Error('Import metadata has an invalid subject_id.');
+    }
+
+    const hasDifferentTermLoaded = subjectFrames.some((frame) => frame.termId !== meta.termId);
+    if (hasDifferentTermLoaded) {
+      clearWorkspaceForTermTransition();
+    }
+
+    const sourceLabel = meta.sourceLabel || String(file?.name || '').trim() || 'Imported Spreadsheet';
+    const importedCourses = buildImportedCoursesFromSpreadsheetRows(parsedFile.rows, {
+      subjectId: meta.subjectId,
+      sourceLabel,
+    });
+    if (importedCourses.length === 0) {
+      throw new Error('Import completed, but no schedulable/cancelled classes were produced.');
+    }
+
+    const frameKey = nextImportedFrameKey(meta.termId, meta.campusId, meta.subjectId);
+    const frameMeta = {
+      key: frameKey,
+      subjectId: meta.subjectId,
+      subjectLabel: meta.subjectLabel,
+      termId: meta.termId,
+      termLabel: termLabelForTermId(meta.termId),
+      campusId: meta.campusId,
+      campusLabel: meta.campusLabel || campusLabelForCampusId(meta.campusId),
+      parsedCourseCount: importedCourses.length,
+      rawRowCount: parsedFile.rows.length,
+      sourceType: 'import',
+      sourceLabel,
+      importComments: Array.isArray(parsedFile.comments) ? parsedFile.comments.map((entry) => String(entry || '').trim()).filter(Boolean) : [],
+    };
+    const namespacedCourses = namespaceCourses(
+      importedCourses.map((course) => ({
+        ...course,
+        termLabel: frameMeta.termLabel,
+        sourceType: 'import',
+        sourceLabel: frameMeta.sourceLabel,
+      })),
+      frameKey,
+      frameMeta
+    );
+
+    setSubjectFrames((prev) => {
+      return [...prev, { ...frameMeta, courses: namespacedCourses }];
+    });
+    setCollapsedFrameKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(frameKey);
+      return next;
+    });
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      namespacedCourses
+        .filter((course) => isSchedulableCourse(course))
+        .forEach((course) => next.add(course.id));
+      return next;
+    });
+
+    recordRecentSubject({
+      termId: meta.termId,
+      termLabel: frameMeta.termLabel,
+      campusId: meta.campusId,
+      campusLabel: frameMeta.campusLabel,
+      subjectId: meta.subjectId,
+      subjectLabel: meta.subjectLabel,
+    });
+
+    setTermId(meta.termId);
+    setCampusId(meta.campusId);
+    setSubjectId(meta.subjectId);
+
+    return {
+      frameKey,
+      parsedCourseCount: importedCourses.length,
+      schedulableSelectedCount: namespacedCourses.filter((course) => isSchedulableCourse(course)).length,
+      sourceLabel,
+    };
+  }
+
+  function openImportFilePicker() {
+    importFileInputRef.current?.click();
+  }
+
+  async function onImportSpreadsheetChange(event) {
+    const file = event.target?.files?.[0] ?? null;
+    if (event.target) {
+      event.target.value = '';
+    }
+    if (!file) {
+      return;
+    }
+
+    setError('');
+    setImportStatus(null);
+    setIsImporting(true);
+
+    try {
+      const imported = await importSpreadsheetFrame(file);
+      setImportStatus({
+        kind: 'success',
+        message: `Imported ${imported.parsedCourseCount} class${imported.parsedCourseCount === 1 ? '' : 'es'} from ${imported.sourceLabel}. Auto-selected ${imported.schedulableSelectedCount} schedulable class${imported.schedulableSelectedCount === 1 ? '' : 'es'}.`,
+      });
+    } catch (importError) {
+      const message = importError instanceof Error ? importError.message : 'Import failed.';
+      setImportStatus({ kind: 'error', message });
+      setError(message);
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
   function clearBrowserLocalStorage() {
     if (typeof window !== 'undefined') {
       try {
@@ -2032,21 +2326,23 @@ function App() {
   }
 
   function buildSharePayload(options = {}) {
-    const { allowEmptySelection = false, includePreview = Boolean(isPdfPreviewOpen) } = options;
-    const frames = subjectFrames.map((frame) => ({
-      c: String(frame.campusId || '').trim(),
-      s: normalizeSubjectIdValue(frame.subjectId),
-      fk: String(frame.key || '').trim(),
-    }));
-    if (frames.length === 0) {
-      return { error: 'Load at least one subject before sharing.' };
-    }
+    const {
+      allowEmptySelection = false,
+      includePreview = Boolean(isPdfPreviewOpen),
+      includeAllFrames = false,
+    } = options;
 
     const selectedEntries = [];
     const selectedEntryKeys = new Set();
-    for (const course of selectedCourses) {
-      const frameKey = String(course.frameKey || '').trim();
-      if (!frameKey) {
+    for (const course of selectedCourses.filter((entry) => !isImportedCourse(entry))) {
+      const frameKey = [
+        String(course.frameTermId || '').trim(),
+        String(course.frameCampusId || '').trim(),
+        normalizeSubjectIdValue(course.frameSubjectId),
+      ]
+        .filter(Boolean)
+        .join('|');
+      if (!frameKey || frameKey.split('|').length !== 3) {
         continue;
       }
       const crns = normalizedCrnListForCourse(course);
@@ -2061,20 +2357,68 @@ function App() {
       selectedEntries.push({ fk: frameKey, cr: crns });
     }
 
-    if (!allowEmptySelection && selectedEntries.length === 0) {
+    const importedSelectedCrns = [
+      ...new Set(
+        selectedCourses
+          .filter((course) => isImportedCourse(course))
+          .flatMap((course) => normalizedCrnListForCourse(course))
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+      ),
+    ].sort();
+
+    if (!allowEmptySelection && selectedEntries.length === 0 && importedSelectedCrns.length === 0) {
       return { error: 'Select at least one schedulable class before sharing.' };
     }
     const selectedCrns = [...new Set(selectedEntries.flatMap((entry) => entry.cr))].sort();
-    if (!allowEmptySelection && selectedCrns.length === 0) {
+    if (!allowEmptySelection && selectedCrns.length === 0 && importedSelectedCrns.length === 0) {
       return { error: 'Select at least one schedulable class before sharing.' };
+    }
+
+    const frameKeyByCourse = new Set(
+      selectedCourses
+        .filter((course) => !isImportedCourse(course))
+        .map((course) =>
+          [
+            String(course.frameTermId || '').trim(),
+            String(course.frameCampusId || '').trim(),
+            normalizeSubjectIdValue(course.frameSubjectId),
+          ]
+            .filter(Boolean)
+            .join('|')
+        )
+        .filter((frameKey) => frameKey && frameKey.split('|').length === 3)
+    );
+
+    const frameTokens = includeAllFrames
+      ? subjectFrames
+          .filter((frame) => String(frame.sourceType || '').trim().toLowerCase() !== 'import')
+          .map((frame) => ({
+            c: String(frame.campusId || '').trim(),
+            s: normalizeSubjectIdValue(frame.subjectId),
+            fk: `${String(frame.termId || '').trim()}|${String(frame.campusId || '').trim()}|${normalizeSubjectIdValue(frame.subjectId)}`,
+          }))
+          .filter((frame) => frame.c && frame.s && frame.fk.split('|').length === 3)
+      : [...frameKeyByCourse].map((frameKey) => {
+          const [, campusPart, subjectPart] = frameKey.split('|');
+          return {
+            c: String(campusPart || '').trim(),
+            s: normalizeSubjectIdValue(subjectPart),
+            fk: frameKey,
+          };
+        });
+
+    if (frameTokens.length === 0 && importedSelectedCrns.length === 0) {
+      return { error: 'Load at least one subject before sharing.' };
     }
 
     return {
       payload: {
         v: SHARE_STATE_VERSION,
         t: String(termId || '').trim(),
-        f: frames.map((frame) => ({ c: frame.c, s: frame.s })),
+        f: frameTokens.map((frame) => ({ c: frame.c, s: frame.s })),
         sc: selectedCrns,
+        isc: importedSelectedCrns,
         ui: {
           onlySel: Boolean(showOnlySelected),
           showCancel: Boolean(showCancelledCourses),
@@ -2130,7 +2474,7 @@ function App() {
       return;
     }
 
-    const built = buildSharePayload({ allowEmptySelection: true });
+    const built = buildSharePayload({ allowEmptySelection: true, includeAllFrames: true });
     if (built.error || !built.payload) {
       setShareStatus({ kind: 'error', message: built.error || 'Could not save state.' });
       return;
@@ -2486,29 +2830,43 @@ function App() {
       }
     }
 
-    if (loadedFrameKeys.size === 0) {
-      isShareRestoreInFlightRef.current = false;
-      setError('Share link could not load any subjects.');
-      setLoading(false);
-      return;
-    }
-
     const selectionEntries = Array.isArray(payload.sel)
       ? payload.sel.filter((entry) => loadedFrameKeys.has(entry.fk))
       : [];
     const selectedCrns = Array.isArray(payload.sc)
       ? [...new Set(payload.sc.map((value) => String(value || '').trim()).filter(Boolean))]
       : [];
+    const importedSelectedCrns = Array.isArray(payload.isc)
+      ? [...new Set(payload.isc.map((value) => String(value || '').trim()).filter(Boolean))]
+      : [];
+
+    if (loadedFrameKeys.size === 0) {
+      const hasImportedOnlySelection =
+        payload.f.length === 0 &&
+        selectedCrns.length === 0 &&
+        selectionEntries.length === 0 &&
+        importedSelectedCrns.length > 0;
+      if (!hasImportedOnlySelection) {
+        isShareRestoreInFlightRef.current = false;
+        setError('Share link could not load any subjects.');
+        setLoading(false);
+        return;
+      }
+    }
+
     setPendingShareRestoreSelection({
       expectedFrameKeys: [...loadedFrameKeys],
       entries: selectionEntries,
       crns: selectedCrns,
+      importedCrns: importedSelectedCrns,
     });
 
     if (failedFrames.length > 0) {
       setError(
         `Share link loaded with warnings: ${failedFrames.length} subject frame(s) failed to load. ${failedFrames.join(' | ')}`
       );
+    } else if (loadedFrameKeys.size === 0 && importedSelectedCrns.length > 0) {
+      setError('Share link includes imported class selections. Re-import spreadsheet classes to restore them.');
     }
 
     setLoading(false);
@@ -2552,7 +2910,13 @@ function App() {
         .map((value) => String(value || '').trim())
         .filter(Boolean)
     );
+    const selectedImportedCrnSet = new Set(
+      (pendingShareRestoreSelection.importedCrns ?? [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    );
     const matchedCrnSet = new Set();
+    const matchedImportedCrnSet = new Set();
 
     for (const entry of pendingShareRestoreSelection.entries) {
       const targetKey = normalizedCrnListKey(entry.cr);
@@ -2574,6 +2938,9 @@ function App() {
         if (!isSchedulableCourse(course)) {
           continue;
         }
+        if (isImportedCourse(course)) {
+          continue;
+        }
         const courseCrns = normalizedCrnListForCourse(course);
         const hasSelectedCrn = courseCrns.some((crn) => selectedCrnSet.has(crn));
         if (!hasSelectedCrn) {
@@ -2588,13 +2955,35 @@ function App() {
       }
     }
 
+    if (selectedImportedCrnSet.size > 0) {
+      for (const course of courses) {
+        if (!isSchedulableCourse(course) || !isImportedCourse(course)) {
+          continue;
+        }
+        const courseCrns = normalizedCrnListForCourse(course);
+        const hasSelectedCrn = courseCrns.some((crn) => selectedImportedCrnSet.has(crn));
+        if (!hasSelectedCrn) {
+          continue;
+        }
+        selectedFromShare.add(course.id);
+        for (const crn of courseCrns) {
+          if (selectedImportedCrnSet.has(crn)) {
+            matchedImportedCrnSet.add(crn);
+          }
+        }
+      }
+    }
+
     setSelectedIds(selectedFromShare);
     setPendingShareRestoreSelection(null);
 
     const unmatchedCrnCount = [...selectedCrnSet].filter((crn) => !matchedCrnSet.has(crn)).length;
-    const unmatchedCount = unmatchedEntries.length + unmatchedCrnCount;
+    const unmatchedImportedCrnCount = [...selectedImportedCrnSet].filter(
+      (crn) => !matchedImportedCrnSet.has(crn)
+    ).length;
+    const unmatchedCount = unmatchedEntries.length + unmatchedCrnCount + unmatchedImportedCrnCount;
     if (unmatchedCount > 0) {
-      const warning = `Share link loaded, but ${unmatchedCount} selected class selection(s) could not be matched in current schedule data.`;
+      const warning = `Share link loaded, but ${unmatchedCount} selected class selection(s) could not be matched in current schedule data.${unmatchedImportedCrnCount > 0 ? ' Re-import spreadsheet classes to restore imported selections.' : ''}`;
       setError((previous) => (previous ? `${previous} ${warning}` : warning));
     }
     if (pendingShareRestorePreview) {
@@ -3155,6 +3544,7 @@ function App() {
             />
             <span className="course-code">{course.courseNumber}</span>
             {course.section ? <span className="course-section">Sec {course.section}</span> : null}
+            {course.sourceType === 'import' ? <span className="course-source-badge">Imported</span> : null}
             {activeWarningCount > 0 ? (
               <button
                 type="button"
@@ -3432,12 +3822,73 @@ function App() {
         </div>
       ) : null}
 
+      {subjectFrames.length === 0 ? (
+        <section className="tools-panel tools-panel-empty" aria-label="Tools">
+          <div className="tools-panel-strip">
+            <h2>Tools</h2>
+            <div className="tools-strip-groups">
+              <div className="tools-group tools-group-import" aria-label="Import controls">
+                <div className="tools-group-top">
+                  <span className="import-controls-title">Import CSV/XLSX</span>
+                  <button
+                    type="button"
+                    className="view-toggle-button import-trigger-button"
+                    onClick={openImportFilePicker}
+                    disabled={loading || isImporting}
+                    aria-label="Import a spreadsheet file"
+                  >
+                    {isImporting ? 'Importing...' : 'Import'}
+                  </button>
+                </div>
+                <input
+                  ref={importFileInputRef}
+                  className="import-file-input"
+                  type="file"
+                  accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  onChange={onImportSpreadsheetChange}
+                />
+                <p className="import-note">Import a spreadsheet to create a course frame and auto-select classes.</p>
+                {importStatus ? (
+                  <p className={`import-status import-status-${importStatus.kind}`}>{importStatus.message}</p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       {subjectFrames.length > 0 ? (
         <main className="workspace">
           <section className="tools-panel" aria-label="Tools">
             <div className="tools-panel-strip">
               <h2>Tools</h2>
               <div className="tools-strip-groups">
+                <div className="tools-group tools-group-import" aria-label="Import controls">
+                  <div className="tools-group-top">
+                    <span className="import-controls-title">Import CSV/XLSX</span>
+                    <button
+                      type="button"
+                      className="view-toggle-button import-trigger-button"
+                      onClick={openImportFilePicker}
+                      disabled={loading || isImporting}
+                      aria-label="Import a spreadsheet file"
+                    >
+                      {isImporting ? 'Importing...' : 'Import'}
+                    </button>
+                  </div>
+                  <input
+                    ref={importFileInputRef}
+                    className="import-file-input"
+                    type="file"
+                    accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    onChange={onImportSpreadsheetChange}
+                  />
+                  <p className="import-note">Adds a new imported frame and auto-selects schedulable classes.</p>
+                  {importStatus ? (
+                    <p className={`import-status import-status-${importStatus.kind}`}>{importStatus.message}</p>
+                  ) : null}
+                </div>
+
                 <div className="tools-group tools-group-share" aria-label="Share controls">
                   <div className="tools-group-top">
                     <span className="share-controls-title">Share Link</span>
@@ -3769,6 +4220,7 @@ function App() {
                   <div className="subject-frame-header">
                     <div className="subject-frame-title-wrap">
                       <h3>{frame.subjectLabel}</h3>
+                      {frame.sourceType === 'import' ? <span className="frame-source-badge">Imported</span> : null}
                       <button
                         type="button"
                         className={`frame-state-indicator ${frame.collapsed ? 'is-collapsed' : 'is-expanded'}`}
@@ -3809,6 +4261,11 @@ function App() {
                   <p className="subject-frame-meta">
                     {frame.subjectLabel} | {frame.termLabel} | {frame.campusLabel}
                   </p>
+                  {frame.sourceType === 'import' ? (
+                    <p className="subject-frame-meta subject-frame-meta-source">
+                      Source: {frame.sourceLabel || 'Imported Spreadsheet'}
+                    </p>
+                  ) : null}
                   {!frame.collapsed ? (
                     <>
                       <p className="subject-frame-meta">
@@ -3863,12 +4320,12 @@ function App() {
             </div>
 
             <div className="calendar-shell">
-              <div className="time-column" style={{ height: bodyHeight }}>
+              <div className="time-column" style={{ height: bodyHeight + dayHeaderHeightPx }}>
                 {hourTicks.map((tick) => (
                   <div
                     key={`time-${tick}`}
                     className="time-label"
-                    style={{ top: (tick - calendar.startMin) * pxPerMin }}
+                    style={{ top: dayHeaderHeightPx + (tick - calendar.startMin) * pxPerMin }}
                   >
                     {minuteLabel(tick)}
                   </div>
@@ -4077,6 +4534,12 @@ function App() {
                         <p>
                           <strong>Campus:</strong> {courseCampusLabel(course) || 'N/A'}
                         </p>
+                        {course.sourceType === 'import' ? (
+                          <p>
+                            <strong>Source:</strong> {course.sourceLabel || 'Imported Spreadsheet'}
+                            {course.externalSource ? ` | ${course.externalSource}` : ''}
+                          </p>
+                        ) : null}
                         {new Set(instructorEntries.map((entry) => entry.instructor)).size > 1 ? (
                           <div>
                             <strong>Cross-listed Instructors</strong>
@@ -4369,6 +4832,12 @@ function App() {
             <p className="detail-meta">
               <strong>Campus:</strong> {activeCourseCampusLabel || 'N/A'}
             </p>
+            {activeCourse.sourceType === 'import' ? (
+              <p className="detail-meta">
+                <strong>Source:</strong> {activeCourse.sourceLabel || 'Imported Spreadsheet'}
+                {activeCourse.externalSource ? ` | ${activeCourse.externalSource}` : ''}
+              </p>
+            ) : null}
             {new Set(instructorEntriesForCourse(activeCourse).map((entry) => entry.instructor)).size > 1 ? (
               <div className="detail-notes">
                 <strong>Cross-listed Instructors</strong>

@@ -37,6 +37,12 @@ Primary user outcomes:
 - Env var reference: `.env.example`
 - Deployment config: `apphosting.yaml`, `firebase.json`
 - Planned import/export design draft: `import-export-plan.md`
+- Spreadsheet schema constants: `src/spreadsheetSchema.js`
+- Spreadsheet codec (CSV/XLSX parse+serialize): `src/spreadsheetCodec.js`
+- Spreadsheet codec tests: `scripts/spreadsheet-codec-tests.mjs`
+- Phase 1 review samples:
+  - `sample-import-schema-v1.csv`
+  - `sample-import-schema-v1.xlsx`
 
 ## Architecture Snapshot
 - Frontend: React (single-page app) with Vite.
@@ -142,6 +148,7 @@ Version-related vars:
 - Usability suite: `npm run test:usability`
 - Search DSL tests: `npm run test:search-dsl`
 - Warning rules tests: `npm run test:warnings`
+- Spreadsheet codec tests: `npm run test:spreadsheet-codec`
 
 ### Notes
 - Usability tests use Playwright and can run in mocked GW mode (`USABILITY_USE_MOCK_GW=1`) to avoid live upstream dependence.
@@ -177,6 +184,17 @@ Major completed evolution in this codebase includes:
 
 ## Known In-Progress / Planned Work
 - Spreadsheet import/export capability is under planning in `import-export-plan.md`.
+- Import/export UX plan includes publishing downloadable sample spreadsheets from the site so end users can edit and re-import them.
+- Current progress on branch `import-export`:
+  - Dependency gate passed using `exceljs` + `fflate` (`npm audit --omit=dev --audit-level=high` clean).
+  - Phase 1 schema/codec foundation implemented and tested.
+  - Schema decisions currently encoded:
+    - `#meta` preamble + optional `#comment` rows
+    - explicit linked-row CRN requirement
+    - `crosslist_crns` list column for cross-listed relationships
+    - section band validation (`1000-4999 => 10-79`, `6000+ => 80+`)
+  - Sample CSV/XLSX files are generated in repo root for review and planned in-app download.
+- Next implementation phase: **Phase 2 (Import UX + Imported Frame Model)** from `import-export-plan.md`.
 - If implementing this feature, re-check URL-share limits and payload strategy early.
 
 ## New Agent Kickoff Prompt Template
@@ -210,3 +228,5 @@ If developer says no:
 ## Context Changelog
 - 2026-03-26: Initial comprehensive session handoff context created.
 - 2026-03-26: Updated PATH guidance to reflect verified default `zsh` environment (no manual PATH override required).
+- 2026-03-26: Added import/export planning note to provide downloadable sample spreadsheets in-app for end-user editing workflows.
+- 2026-03-26: Added import/export implementation status (Phase 1 complete on `import-export`), schema rules, sample file references, and next phase guidance.
