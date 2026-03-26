@@ -1,5 +1,6 @@
 import { decompressFromEncodedURIComponent, compressToEncodedURIComponent } from 'lz-string';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { zipSync, strToU8 } from 'fflate';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 import { getRecoveryReloadHint } from '../shared/recoveryHints.js';
 import { buildCourseWarnings } from './courseWarnings.js';
@@ -9,7 +10,13 @@ import {
   matchesParsedCourseSearchQuery,
   parseCourseSearchQuery,
 } from './searchDsl.js';
-import { parseSpreadsheetCsv, parseSpreadsheetXlsxBuffer } from './spreadsheetCodec.js';
+import {
+  formatMeetingPattern,
+  parseSpreadsheetCsv,
+  parseSpreadsheetXlsxBuffer,
+  serializeSpreadsheetCsv,
+  serializeSpreadsheetXlsx,
+} from './spreadsheetCodec.js';
 
 // Update these defaults each scheduling cycle.
 const DEFAULT_SELECTION = {
@@ -97,6 +104,9 @@ const MAX_SHARE_FRAME_COUNT = 24;
 const MAX_SHARE_SELECTION_ENTRIES = 1_200;
 const MAX_SHARE_CRN_COUNT = 4_000;
 const IMPORT_STATUS_RESET_MS = 8000;
+const EXPORT_STATUS_RESET_MS = 8000;
+const EXPORT_FORMAT_CSV = 'csv';
+const EXPORT_FORMAT_XLSX = 'xlsx';
 
 function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -153,6 +163,171 @@ function isXlsxImportFile(file) {
     mimeType.includes('spreadsheetml.sheet') ||
     mimeType.includes('application/vnd.ms-excel')
   );
+}
+
+function sanitizeExportToken(value, fallback = 'value') {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function crnSetForCourse(course) {
+  return [
+    ...new Set(
+      registrationDetailsForCourse(course)
+        .flatMap((detail) => detail.crns ?? [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    ),
+  ].sort();
+}
+
+function normalizeRelationTypeForExport(relationType) {
+  const normalized = String(relationType || '').trim().toLowerCase();
+  if (normalized === 'linked' || normalized === 'cross-listed') {
+    return normalized;
+  }
+  return 'primary';
+}
+
+function normalizeCourseNumberForExport(value, fallbackSubject = '') {
+  const text = String(value || '').trim();
+  if (text) {
+    return text;
+  }
+  return String(fallbackSubject || '').trim();
+}
+
+function commentsByCourseNumber(course) {
+  const mapping = new Map();
+  for (const entry of commentEntriesForCourse(course)) {
+    const key = String(entry.courseNumber || '').trim() || String(course.courseNumber || '').trim() || 'Course';
+    const bucket = mapping.get(key) ?? [];
+    const text = String(entry.text || '').trim();
+    if (text) {
+      bucket.push(text);
+      mapping.set(key, bucket);
+    }
+  }
+  return mapping;
+}
+
+function titleByCourseNumber(course) {
+  const mapping = new Map();
+  for (const entry of titleEntriesForCourse(course)) {
+    const key = String(entry.courseNumber || '').trim() || String(course.courseNumber || '').trim() || 'Course';
+    const title = String(entry.title || '').trim();
+    if (title && !mapping.has(key)) {
+      mapping.set(key, title);
+    }
+  }
+  return mapping;
+}
+
+function instructorByCourseNumber(course) {
+  const mapping = new Map();
+  for (const entry of instructorEntriesForCourse(course)) {
+    const key = String(entry.courseNumber || '').trim() || String(course.courseNumber || '').trim() || 'Course';
+    const instructor = String(entry.instructor || '').trim();
+    if (instructor && !mapping.has(key)) {
+      mapping.set(key, instructor);
+    }
+  }
+  return mapping;
+}
+
+function rowsForCourseExport(course, frameSubjectId) {
+  const relationType = normalizeRelationTypeForExport(course.relationType);
+  const registration = registrationDetailsForCourse(course);
+  const commentsLookup = commentsByCourseNumber(course);
+  const titleLookup = titleByCourseNumber(course);
+  const instructorLookup = instructorByCourseNumber(course);
+  const fallbackCourseNumber = normalizeCourseNumberForExport(course.courseNumber, frameSubjectId);
+  const allCrns = crnSetForCourse(course);
+  const crosslistGroup =
+    relationType === 'cross-listed'
+      ? String(course.structuredCrosslistGroup || normalizedCrnListKey(allCrns) || String(course.id || '')).trim()
+      : '';
+  const crosslistCrns = relationType === 'cross-listed' ? allCrns.join('|') : '';
+  const meetingPattern = formatMeetingPattern(course.meetings ?? []);
+  const dateRange = String(course.dateRange || '').trim();
+  const room = String(course.room || '').trim();
+  const credits = String(course.credits || '').trim();
+  const linkedParentCrn = relationType === 'linked' ? String(course.linkedParentCrn || '').trim() : '';
+  const externalSource = String(course.externalSource || '').trim();
+  const importAction = course.importAction && typeof course.importAction === 'object' ? course.importAction : {};
+
+  const rows = [];
+  let rowOrdinal = 1;
+  for (const detail of registration) {
+    const detailCourseNumber = normalizeCourseNumberForExport(detail.courseNumber, frameSubjectId || fallbackCourseNumber);
+    const sections = Array.isArray(detail.sections) && detail.sections.length > 0 ? detail.sections : [course.section];
+    const crns = Array.isArray(detail.crns) && detail.crns.length > 0 ? detail.crns : [course.crn];
+    const span = Math.max(1, sections.length, crns.length);
+    const title = titleLookup.get(detailCourseNumber) || String(course.title || '').trim() || 'Untitled';
+    const instructor = instructorLookup.get(detailCourseNumber) || String(course.instructor || '').trim() || 'TBA';
+    const commentText = (commentsLookup.get(detailCourseNumber) ?? []).join(' | ');
+
+    for (let index = 0; index < span; index += 1) {
+      const crn = String(crns[index] || crns[0] || '').trim();
+      const section = String(sections[index] || sections[0] || '').trim();
+      rows.push({
+        class_uid: `${String(course.id || 'course')}:${sanitizeExportToken(detailCourseNumber, 'course')}:${rowOrdinal}`,
+        crn,
+        course_number: detailCourseNumber,
+        section,
+        title,
+        status: String(course.status || '').trim(),
+        credits,
+        instructor,
+        room,
+        date_range: dateRange,
+        meeting_pattern: meetingPattern,
+        relation_type: relationType,
+        linked_parent_crn: linkedParentCrn,
+        crosslist_group: crosslistGroup,
+        crosslist_crns: crosslistCrns,
+        comment: commentText,
+        action_required: String(importAction.required || '').trim(),
+        action_status: String(importAction.status || '').trim(),
+        action_taken_at: String(importAction.takenAt || '').trim(),
+        action_note: String(importAction.note || '').trim(),
+        external_source: externalSource,
+      });
+      rowOrdinal += 1;
+    }
+  }
+
+  if (rows.length === 0) {
+    rows.push({
+      class_uid: `${String(course.id || 'course')}:1`,
+      crn: String(course.crn || '').trim(),
+      course_number: fallbackCourseNumber,
+      section: String(course.section || '').trim(),
+      title: String(course.title || '').trim() || 'Untitled',
+      status: String(course.status || '').trim(),
+      credits,
+      instructor: String(course.instructor || '').trim() || 'TBA',
+      room,
+      date_range: dateRange,
+      meeting_pattern: meetingPattern,
+      relation_type: relationType,
+      linked_parent_crn: linkedParentCrn,
+      crosslist_group: crosslistGroup,
+      crosslist_crns: crosslistCrns,
+      comment: '',
+      action_required: String(importAction.required || '').trim(),
+      action_status: String(importAction.status || '').trim(),
+      action_taken_at: String(importAction.takenAt || '').trim(),
+      action_note: String(importAction.note || '').trim(),
+      external_source: externalSource,
+    });
+  }
+
+  return rows;
 }
 
 function termLabelForTermId(termId) {
@@ -1214,6 +1389,9 @@ function App() {
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importStatus, setImportStatus] = useState(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportFormat, setExportFormat] = useState(EXPORT_FORMAT_CSV);
+  const [exportStatus, setExportStatus] = useState(null);
   const [shareStatus, setShareStatus] = useState(null);
   const [pendingShareRestoreSelection, setPendingShareRestoreSelection] = useState(null);
   const [pendingShareRestorePreview, setPendingShareRestorePreview] = useState(false);
@@ -1384,6 +1562,16 @@ function App() {
   }, [importStatus]);
 
   useEffect(() => {
+    if (!exportStatus) {
+      return undefined;
+    }
+    const timerId = window.setTimeout(() => {
+      setExportStatus(null);
+    }, EXPORT_STATUS_RESET_MS);
+    return () => window.clearTimeout(timerId);
+  }, [exportStatus]);
+
+  useEffect(() => {
     if (!isSearchSyntaxOpen) {
       return undefined;
     }
@@ -1428,6 +1616,13 @@ function App() {
     [orderedRecentSubjects]
   );
   const courses = useMemo(() => subjectFrames.flatMap((frame) => frame.courses), [subjectFrames]);
+  const frameByKey = useMemo(
+    () =>
+      new Map(
+        subjectFrames.map((frame) => [String(frame.key || '').trim(), frame])
+      ),
+    [subjectFrames]
+  );
 
   useEffect(() => {
     const validIds = new Set(courses.map((course) => course.id));
@@ -1786,6 +1981,8 @@ function App() {
   );
   const canPrint = printCourses.length > 0 && (printIncludeCalendar || printIncludeSelectedList);
   const canShare = selectedCourses.length > 0;
+  const canExportSelected = selectedCourses.length > 0;
+  const exportFormatLabel = exportFormat === EXPORT_FORMAT_XLSX ? 'XLSX' : 'CSV';
   const canSaveState = subjectFrames.length > 0;
   function courseCampusLabel(course) {
     return (
@@ -2280,6 +2477,200 @@ function App() {
       setError(message);
     } finally {
       setIsImporting(false);
+    }
+  }
+
+  function exportExtensionForFormat(format) {
+    return format === EXPORT_FORMAT_XLSX ? 'xlsx' : 'csv';
+  }
+
+  function exportMimeTypeForFormat(format) {
+    return format === EXPORT_FORMAT_XLSX
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : 'text/csv;charset=utf-8';
+  }
+
+  function normalizeExportFormat(format) {
+    return format === EXPORT_FORMAT_XLSX ? EXPORT_FORMAT_XLSX : EXPORT_FORMAT_CSV;
+  }
+
+  function downloadBytes(filename, bytes, mimeType) {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+    const blob = new Blob([bytes], { type: mimeType });
+    const objectUrl = window.URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(objectUrl);
+    }, 2500);
+  }
+
+  function sortedCoursesForExport(coursesToSort) {
+    return [...(coursesToSort ?? [])].sort((left, right) => {
+      return (
+        String(left.courseNumber || '').localeCompare(String(right.courseNumber || '')) ||
+        String(left.section || '').localeCompare(String(right.section || '')) ||
+        String(left.title || '').localeCompare(String(right.title || ''))
+      );
+    });
+  }
+
+  async function buildFrameExportArtifact(frame, frameCourses, options = {}) {
+    const format = normalizeExportFormat(options.format || exportFormat);
+    const scopeToken = sanitizeExportToken(options.scope || 'all', 'all');
+    const subjectToken = sanitizeExportToken(frame.subjectId || frame.subjectLabel || 'subject', 'subject');
+    const campusToken = sanitizeExportToken(frame.campusId || frame.campusLabel || 'campus', 'campus');
+    const termToken = sanitizeExportToken(frame.termId || termId || 'term', 'term');
+    const sourceToken = frame.sourceType === 'import' ? '-import' : '';
+    const extension = exportExtensionForFormat(format);
+    const filename = `gw-course-studio-${subjectToken}-${termToken}-${campusToken}${sourceToken}-${scopeToken}.${extension}`;
+    const serializedRows = sortedCoursesForExport(frameCourses).flatMap((course) =>
+      rowsForCourseExport(course, frame.subjectId)
+    );
+
+    const meta = {
+      schema_version: '1',
+      term_id: String(frame.termId || '').trim(),
+      campus_id: String(frame.campusId || '').trim(),
+      subject_id: normalizeSubjectIdValue(frame.subjectId),
+      subject_label: String(frame.subjectLabel || frame.subjectId || '').trim(),
+      campus_label: String(frame.campusLabel || '').trim(),
+      source_label: options.sourceLabel || `GW Course Studio export (${options.scopeLabel || 'All Rows'})`,
+      exported_at: new Date().toISOString(),
+      app_version: APP_VERSION,
+    };
+    const comments = [
+      frame.sourceType === 'import' ? `Source frame: ${String(frame.sourceLabel || 'Imported Spreadsheet').trim()}` : '',
+      options.comment || '',
+    ].filter(Boolean);
+
+    if (format === EXPORT_FORMAT_XLSX) {
+      const bytes = await serializeSpreadsheetXlsx({
+        meta,
+        comments,
+        rows: serializedRows,
+        sheetName: String(frame.subjectId || frame.subjectLabel || 'Schedule').slice(0, 31),
+      });
+      return { filename, bytes, mimeType: exportMimeTypeForFormat(format) };
+    }
+
+    const csvText = serializeSpreadsheetCsv({
+      meta,
+      comments,
+      rows: serializedRows,
+    });
+    return { filename, bytes: strToU8(csvText), mimeType: exportMimeTypeForFormat(format) };
+  }
+
+  function downloadExportArtifacts(artifacts, format, zipNameBase) {
+    const entries = Array.isArray(artifacts) ? artifacts.filter(Boolean) : [];
+    if (entries.length === 0) {
+      throw new Error('Nothing to export for the current selection.');
+    }
+    if (entries.length === 1) {
+      const artifact = entries[0];
+      downloadBytes(artifact.filename, artifact.bytes, artifact.mimeType);
+      return { mode: 'single', count: 1 };
+    }
+
+    const zipEntries = {};
+    for (const artifact of entries) {
+      zipEntries[artifact.filename] = artifact.bytes;
+    }
+    const zipBytes = zipSync(zipEntries, { level: 6 });
+    const zipName = `${sanitizeExportToken(zipNameBase || `gw-course-studio-${format}-export`, 'gw-course-studio-export')}.zip`;
+    downloadBytes(zipName, zipBytes, 'application/zip');
+    return { mode: 'zip', count: entries.length };
+  }
+
+  async function exportSelectedAcrossFrames(format) {
+    const normalizedFormat = normalizeExportFormat(format || exportFormat);
+    const selectedByFrame = new Map();
+    for (const course of selectedCourses) {
+      const frameKey = String(course.frameKey || '').trim();
+      const frame = frameByKey.get(frameKey);
+      if (!frame) {
+        continue;
+      }
+      const bucket = selectedByFrame.get(frameKey) ?? [];
+      bucket.push(course);
+      selectedByFrame.set(frameKey, bucket);
+    }
+
+    if (selectedByFrame.size === 0) {
+      throw new Error('Select at least one schedulable class before exporting.');
+    }
+
+    const artifacts = [];
+    for (const [frameKey, frameCourses] of selectedByFrame.entries()) {
+      const frame = frameByKey.get(frameKey);
+      if (!frame) {
+        continue;
+      }
+      artifacts.push(
+        await buildFrameExportArtifact(frame, frameCourses, {
+          format: normalizedFormat,
+          scope: 'selected',
+          scopeLabel: 'Selected Rows',
+          comment: `Exported ${frameCourses.length} selected schedulable class(es) from this frame.`,
+        })
+      );
+    }
+
+    return downloadExportArtifacts(
+      artifacts,
+      normalizedFormat,
+      `gw-course-studio-selected-${sanitizeExportToken(termId, 'term')}-${normalizedFormat}`
+    );
+  }
+
+  async function exportFrameRows(frame, options = {}) {
+    const normalizedFormat = normalizeExportFormat(options.format || exportFormat);
+    const selectedOnly = Boolean(options.selectedOnly);
+    const frameCourses = selectedOnly
+      ? frame.courses.filter((course) => selectedIds.has(course.id) && isSchedulableCourse(course))
+      : [...frame.courses];
+
+    if (frameCourses.length === 0) {
+      throw new Error(selectedOnly ? 'No selected schedulable rows in this frame to export.' : 'No rows in this frame to export.');
+    }
+
+    const artifact = await buildFrameExportArtifact(frame, frameCourses, {
+      format: normalizedFormat,
+      scope: selectedOnly ? 'selected' : 'all',
+      scopeLabel: selectedOnly ? 'Selected Rows' : 'All Rows',
+      comment: selectedOnly
+        ? `Exported selected schedulable classes from ${frame.subjectLabel}.`
+        : `Exported all rows from ${frame.subjectLabel}.`,
+    });
+    downloadExportArtifacts([artifact], normalizedFormat, artifact.filename);
+  }
+
+  async function runExportTask(taskRunner, successMessageBuilder) {
+    setError('');
+    setExportStatus(null);
+    setIsExporting(true);
+    try {
+      const result = await taskRunner();
+      const message = successMessageBuilder
+        ? successMessageBuilder(result)
+        : result?.mode === 'zip'
+          ? `Exported ${result.count} files as ZIP.`
+          : 'Export completed.';
+      setExportStatus({ kind: 'success', message });
+    } catch (exportError) {
+      const message = exportError instanceof Error ? exportError.message : 'Export failed.';
+      setExportStatus({ kind: 'error', message });
+      setError(message);
+    } finally {
+      setIsExporting(false);
     }
   }
 
@@ -3906,6 +4297,53 @@ function App() {
                   ) : null}
                 </div>
 
+                <div className="tools-group tools-group-export" aria-label="Export controls">
+                  <div className="tools-group-top">
+                    <span className="export-controls-title">Export</span>
+                    <button
+                      type="button"
+                      className="view-toggle-button export-trigger-button"
+                      onClick={() =>
+                        runExportTask(
+                          () => exportSelectedAcrossFrames(exportFormat),
+                          (result) =>
+                            result?.mode === 'zip'
+                              ? `Exported selected classes in ${result.count} files (ZIP, ${exportFormatLabel}).`
+                              : `Exported selected classes (${exportFormatLabel}).`
+                        )
+                      }
+                      disabled={!canExportSelected || isExporting}
+                      aria-label="Export selected classes"
+                    >
+                      {isExporting ? 'Exporting...' : 'Export Selected'}
+                    </button>
+                  </div>
+                  <div className="export-format-row" role="radiogroup" aria-label="Export format">
+                    <label className="export-format-toggle">
+                      <input
+                        type="radio"
+                        name="export-format-main"
+                        checked={exportFormat === EXPORT_FORMAT_CSV}
+                        onChange={() => setExportFormat(EXPORT_FORMAT_CSV)}
+                      />
+                      CSV
+                    </label>
+                    <label className="export-format-toggle">
+                      <input
+                        type="radio"
+                        name="export-format-main"
+                        checked={exportFormat === EXPORT_FORMAT_XLSX}
+                        onChange={() => setExportFormat(EXPORT_FORMAT_XLSX)}
+                      />
+                      XLSX
+                    </label>
+                  </div>
+                  <p className="export-note">Exports selected classes by frame; multi-frame exports download as ZIP.</p>
+                  {exportStatus ? (
+                    <p className={`export-status export-status-${exportStatus.kind}`}>{exportStatus.message}</p>
+                  ) : null}
+                </div>
+
                 <div className="tools-group tools-group-share" aria-label="Share controls">
                   <div className="tools-group-top">
                     <span className="share-controls-title">Share Link</span>
@@ -4196,6 +4634,22 @@ function App() {
                     <button
                       type="button"
                       className="course-info-link"
+                      onClick={() =>
+                        runExportTask(
+                          () => exportSelectedAcrossFrames(exportFormat),
+                          (result) =>
+                            result?.mode === 'zip'
+                              ? `Exported selected classes in ${result.count} files (ZIP, ${exportFormatLabel}).`
+                              : `Exported selected classes (${exportFormatLabel}).`
+                        )
+                      }
+                      disabled={selectedFrameRows.length === 0 || isExporting}
+                    >
+                      Export Selected
+                    </button>
+                    <button
+                      type="button"
+                      className="course-info-link"
                       onClick={clearSelection}
                       disabled={selectedFrameRows.length === 0}
                     >
@@ -4265,6 +4719,32 @@ function App() {
                         disabled={frameTotalSelectedCount === 0}
                       >
                         Clear Selections
+                      </button>
+                      <button
+                        type="button"
+                        className="course-info-link"
+                        onClick={() =>
+                          runExportTask(
+                            () => exportFrameRows(frame, { selectedOnly: false, format: exportFormat }),
+                            () => `Exported ${frame.subjectLabel} all rows (${exportFormatLabel}).`
+                          )
+                        }
+                        disabled={frame.courses.length === 0 || isExporting}
+                      >
+                        Export All
+                      </button>
+                      <button
+                        type="button"
+                        className="course-info-link"
+                        onClick={() =>
+                          runExportTask(
+                            () => exportFrameRows(frame, { selectedOnly: true, format: exportFormat }),
+                            () => `Exported ${frame.subjectLabel} selected rows (${exportFormatLabel}).`
+                          )
+                        }
+                        disabled={frameTotalSelectedCount === 0 || isExporting}
+                      >
+                        Export Selected
                       </button>
                       <button
                         type="button"

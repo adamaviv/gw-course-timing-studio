@@ -373,6 +373,11 @@ button:disabled {
   min-width: 260px;
 }
 
+.tools-group-export {
+  justify-items: end;
+  min-width: 280px;
+}
+
 .tools-group-print {
   justify-items: end;
 }
@@ -1108,6 +1113,16 @@ button:disabled {
   margin-top: 0.1rem;
 }
 
+.export-controls-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #5b3e0f;
+  line-height: 1.1;
+  margin-top: 0.1rem;
+}
+
 .share-controls-title {
   font-size: 0.72rem;
   font-weight: 700;
@@ -1156,7 +1171,8 @@ button:disabled {
 .print-trigger-button,
 .share-trigger-button,
 .save-state-trigger-button,
-.import-trigger-button {
+.import-trigger-button,
+.export-trigger-button {
   width: 3.18rem;
   height: 1.76rem;
 }
@@ -1182,6 +1198,25 @@ button:disabled {
 
 .import-file-input {
   display: none;
+}
+
+.export-trigger-button {
+  width: 6.8rem;
+  background: #7b4f12;
+  border-color: #6d460f;
+  color: #fff;
+  font-size: 0.69rem;
+}
+
+.export-trigger-button:hover {
+  background: #69430f;
+}
+
+.export-trigger-button:disabled {
+  background: #c8b392;
+  border-color: #b8a281;
+  color: #f7f2e9;
+  cursor: not-allowed;
 }
 
 .import-note {
@@ -1217,6 +1252,55 @@ button:disabled {
 }
 
 .import-status-error {
+  color: #7a2522;
+}
+
+.export-format-row {
+  display: inline-flex;
+  gap: 0.24rem;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.export-format-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.66rem;
+  color: #5a451d;
+  border: 1px solid #cfbe9f;
+  border-radius: 999px;
+  background: #fff8ed;
+  padding: 0.08rem 0.3rem;
+  cursor: pointer;
+}
+
+.export-format-toggle input {
+  margin: 0;
+  accent-color: #7b4f12;
+}
+
+.export-note {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.15;
+  color: #5f4a24;
+  text-align: right;
+}
+
+.export-status {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.export-status-success {
+  color: #2f4f1d;
+}
+
+.export-status-error {
   color: #7a2522;
 }
 
@@ -2443,7 +2527,13 @@ body.print-prep .print-detail-card:last-child {
 
   .import-note,
   .import-status,
-  .import-sample-links {
+  .import-sample-links,
+  .export-note,
+  .export-status {
     text-align: left;
+  }
+
+  .export-format-row {
+    justify-content: flex-start;
   }
 }
