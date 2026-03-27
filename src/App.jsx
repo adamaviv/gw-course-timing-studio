@@ -112,23 +112,177 @@ function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
 }
 
-function formatSpreadsheetImportErrors(errors, maxItems = 6) {
+function suggestedFixForSpreadsheetImportError(entry) {
+  const column = String(entry?.column || '')
+    .trim()
+    .toLowerCase();
+  const message = String(entry?.message || '')
+    .trim()
+    .toLowerCase();
+
+  if (column === 'term_id' || column === 'meta.term_id' || message.includes('term_id')) {
+    return 'Use a 6-digit term_id such as 202603.';
+  }
+  if (column === 'campus_id' || column === 'meta.campus_id' || message.includes('campus_id')) {
+    return 'Use a supported campus_id: 1, 2, 3, 4, 6, 7, or 8.';
+  }
+  if (column === 'subject_id' || column === 'meta.subject_id' || message.includes('subject_id')) {
+    return 'Use an uppercase subject code such as CSCI.';
+  }
+  if (column === 'meta.key') {
+    return 'Use a #meta row with key/value, for example: #meta,term_id,202603.';
+  }
+  if (column === 'header.blank') {
+    return 'Fill every header cell using the schema column names, with no blanks.';
+  }
+  if (column === 'header.duplicate') {
+    return 'Remove duplicate header names so each schema column appears only once.';
+  }
+  if (column === 'header.missing') {
+    return 'Add all missing schema header columns exactly as documented in the template.';
+  }
+  if (column === 'header.unexpected') {
+    return 'Remove non-schema header columns or rename them to valid schema columns.';
+  }
+  if (column === 'header.order') {
+    return 'Reorder header columns to match the template schema order exactly.';
+  }
+  if (column.startsWith('meta.')) {
+    return 'Ensure required metadata rows exist: term_id, campus_id, and subject_id.';
+  }
+  if (column === 'crn') {
+    if (message.includes('linked rows require an explicit crn')) {
+      return 'Linked rows must include their own CRN in the crn column.';
+    }
+    return 'Use numeric CRNs only (typically 5 digits).';
+  }
+  if (column === 'relation_type') {
+    return 'Allowed relation_type values are: primary, linked, or cross-listed.';
+  }
+  if (column === 'linked_parent_crn') {
+    return 'Set linked_parent_crn to a primary row CRN that exists in the same file.';
+  }
+  if (column === 'crosslist_group') {
+    return 'Use the same crosslist_group value across at least two cross-listed rows.';
+  }
+  if (column === 'crosslist_crns') {
+    return 'Provide a CRN list separated by | or , and include every group member CRN, including this row CRN.';
+  }
+  if (column === 'meeting_pattern') {
+    return 'Use meeting format like: MWF 10:00 AM-10:50 AM | R 2:00 PM-3:15 PM.';
+  }
+  if (column === 'xlsx_format') {
+    return 'Upload a valid .xlsx file or save/export the spreadsheet again before importing.';
+  }
+  if (message.includes('missing required meta key')) {
+    return 'Add missing #meta rows for term_id, campus_id, and subject_id.';
+  }
+  return '';
+}
+
+function buildSpreadsheetImportErrorReport(errors, maxItems = Number.POSITIVE_INFINITY) {
   const entries = Array.isArray(errors) ? errors : [];
   if (entries.length === 0) {
-    return 'Import failed due to an unknown validation error.';
+    return {
+      summary: 'Import failed due to an unknown validation error.',
+      details: [],
+    };
   }
-  const formatted = entries.slice(0, maxItems).map((entry) => {
-    const rowPrefix = Number.isFinite(entry?.rowNumber) ? `Row ${entry.rowNumber}` : 'File';
+  const normalizedMaxItems = Number.isFinite(maxItems) ? Math.max(1, Math.floor(maxItems)) : entries.length;
+  const details = entries.slice(0, normalizedMaxItems).map((entry) => {
+    const rowPrefix = Number.isFinite(entry?.rowNumber) ? `Line ${entry.rowNumber}` : 'File';
     const column = String(entry?.column || '').trim();
     const columnText = column ? ` (${column})` : '';
     const message = String(entry?.message || 'Unknown validation issue.').trim();
-    return `${rowPrefix}${columnText}: ${message}`;
+    const suggestedFix = suggestedFixForSpreadsheetImportError(entry);
+    return suggestedFix
+      ? `${rowPrefix}${columnText}: ${message}\n    Recommended fix: ${suggestedFix}`
+      : `${rowPrefix}${columnText}: ${message}`;
   });
-  const remaining = entries.length - formatted.length;
+  const remaining = entries.length - details.length;
+  const detailsWithRemainder = [...details];
   if (remaining > 0) {
-    formatted.push(`...and ${remaining} additional issue${remaining === 1 ? '' : 's'}.`);
+    detailsWithRemainder.push(`...and ${remaining} additional issue${remaining === 1 ? '' : 's'}.`);
   }
-  return formatted.join(' | ');
+  return {
+    summary: `Import validation failed with ${entries.length} issue${entries.length === 1 ? '' : 's'}.`,
+    details: detailsWithRemainder,
+  };
+}
+
+function formatSpreadsheetImportErrors(errors, maxItems = 6) {
+  const report = buildSpreadsheetImportErrorReport(errors, maxItems);
+  if (!report.details.length) {
+    return report.summary;
+  }
+  return `${report.summary} ${report.details.join(' | ')}`;
+}
+
+function buildImportFailureErrorMessage(summary, detailLines) {
+  const details = Array.isArray(detailLines)
+    ? detailLines.map((line) => String(line || '').trim()).filter(Boolean)
+    : [];
+  if (details.length === 0) {
+    return summary;
+  }
+  const formattedDetails = details.map((line) => {
+    const [baseLine, ...remaining] = line.split('\n');
+    const recommendedFixPrefix = 'Recommended fix:';
+    const recommendedFixLine = remaining
+      .map((entry) => String(entry || '').trim())
+      .find((entry) => entry.toLowerCase().startsWith(recommendedFixPrefix.toLowerCase()));
+    if (!recommendedFixLine) {
+      return `* ${baseLine.trim()}`;
+    }
+    const recommendedFixText = recommendedFixLine.slice(recommendedFixPrefix.length).trim();
+    return `* ${baseLine.trim()}\n   * *Recommended fix: ${recommendedFixText}*`;
+  });
+  return `${summary}\n${formattedDetails.join('\n')}`;
+}
+
+function parseStructuredErrorText(message) {
+  const raw = String(message || '');
+  const lines = raw.split('\n');
+  const bulletStartIndex = lines.findIndex((line) => /^\*\s+/.test(line.trim()));
+  if (bulletStartIndex < 0) {
+    return { summary: raw, bullets: [] };
+  }
+
+  const summary = lines
+    .slice(0, bulletStartIndex)
+    .join('\n')
+    .trim();
+  const bullets = [];
+  let activeBullet = null;
+
+  for (const rawLine of lines.slice(bulletStartIndex)) {
+    const line = String(rawLine || '');
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (/^\*\s+\*recommended fix:/i.test(trimmed) && activeBullet) {
+      const fixText = trimmed
+        .replace(/^\*\s+\*recommended fix:\s*/i, '')
+        .replace(/\*+$/g, '')
+        .trim();
+      activeBullet.recommendedFix = fixText;
+      continue;
+    }
+    if (/^\*\s+/.test(trimmed)) {
+      activeBullet = {
+        text: trimmed.replace(/^\*\s+/, '').trim(),
+        recommendedFix: '',
+      };
+      bullets.push(activeBullet);
+      continue;
+    }
+    if (activeBullet) {
+      activeBullet.text = `${activeBullet.text} ${trimmed}`.trim();
+    }
+  }
+
+  return { summary, bullets };
 }
 
 function normalizeSpreadsheetMetaForImport(meta) {
@@ -163,6 +317,17 @@ function isXlsxImportFile(file) {
     mimeType.includes('spreadsheetml.sheet') ||
     mimeType.includes('application/vnd.ms-excel')
   );
+}
+
+function isSupportedImportFile(file) {
+  return isCsvImportFile(file) || isXlsxImportFile(file);
+}
+
+function importFileQueueKey(file) {
+  const name = String(file?.name || '').trim().toLowerCase();
+  const size = Number(file?.size) || 0;
+  const modified = Number(file?.lastModified) || 0;
+  return `${name}|${size}|${modified}`;
 }
 
 function sanitizeExportToken(value, fallback = 'value') {
@@ -1352,7 +1517,7 @@ function buildCalendar(courses, activeCourseId) {
 }
 
 function App() {
-  const importFileInputRef = useRef(null);
+  const importDialogFileInputRef = useRef(null);
   const [campusId, setCampusId] = useState(DEFAULT_SELECTION.campusId);
   const [termId, setTermId] = useState(DEFAULT_SELECTION.termId);
   const [subjectId, setSubjectId] = useState(DEFAULT_SELECTION.subjectId);
@@ -1391,6 +1556,9 @@ function App() {
   const [shareIncludePreview, setShareIncludePreview] = useState(false);
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
+  const [isImportDragActive, setIsImportDragActive] = useState(false);
+  const [importDialogQueuedFiles, setImportDialogQueuedFiles] = useState([]);
   const [importStatus, setImportStatus] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportFormat, setExportFormat] = useState(EXPORT_FORMAT_CSV);
@@ -1555,7 +1723,7 @@ function App() {
   }, [shareStatus]);
 
   useEffect(() => {
-    if (!importStatus) {
+    if (!importStatus || importStatus.kind !== 'success') {
       return undefined;
     }
     const timerId = window.setTimeout(() => {
@@ -1588,6 +1756,20 @@ function App() {
   }, [isSearchSyntaxOpen]);
 
   useEffect(() => {
+    if (!isImportDialogOpen || isImporting) {
+      return undefined;
+    }
+    function handleKeydown(event) {
+      if (event.key === 'Escape') {
+        setIsImportDialogOpen(false);
+        setIsImportDragActive(false);
+      }
+    }
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  }, [isImportDialogOpen, isImporting]);
+
+  useEffect(() => {
     if (!warningDialogCourseId) {
       return undefined;
     }
@@ -1602,6 +1784,7 @@ function App() {
 
   const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
   const recoveryReloadHint = useMemo(() => getRecoveryReloadHint(), []);
+  const parsedErrorDisplay = useMemo(() => parseStructuredErrorText(error), [error]);
   const orderedRecentSubjects = useMemo(() => {
     const pinned = [];
     const unpinned = [];
@@ -2342,7 +2525,10 @@ function App() {
   async function importSpreadsheetFrame(file) {
     const parsedFile = await parseSpreadsheetImportFile(file);
     if (!parsedFile.ok) {
-      throw new Error(`Import validation failed. ${formatSpreadsheetImportErrors(parsedFile.errors)}`);
+      const report = buildSpreadsheetImportErrorReport(parsedFile.errors);
+      const validationError = new Error(report.summary);
+      validationError.importErrorDetails = report.details;
+      throw validationError;
     }
     if (!Array.isArray(parsedFile.rows) || parsedFile.rows.length === 0) {
       throw new Error('Import file has no class rows after parsing.');
@@ -2436,8 +2622,91 @@ function App() {
     };
   }
 
-  function openImportFilePicker() {
-    importFileInputRef.current?.click();
+  function openImportDialog() {
+    setIsImportDialogOpen(true);
+    setIsImportDragActive(false);
+    setImportDialogQueuedFiles([]);
+  }
+
+  function closeImportDialog() {
+    if (isImporting) {
+      return;
+    }
+    setIsImportDialogOpen(false);
+    setIsImportDragActive(false);
+    setImportDialogQueuedFiles([]);
+  }
+
+  function triggerImportDialogFilePicker() {
+    importDialogFileInputRef.current?.click();
+  }
+
+  function addFilesToImportQueue(rawFiles) {
+    const inputFiles = Array.isArray(rawFiles) ? rawFiles : Array.from(rawFiles ?? []);
+    if (inputFiles.length === 0) {
+      return;
+    }
+
+    const supportedFiles = [];
+    const rejectedNames = [];
+    for (const file of inputFiles) {
+      if (isSupportedImportFile(file)) {
+        supportedFiles.push(file);
+      } else {
+        rejectedNames.push(String(file?.name || 'unknown-file').trim() || 'unknown-file');
+      }
+    }
+
+    if (supportedFiles.length > 0) {
+      setImportDialogQueuedFiles((prev) => {
+        const next = [...prev];
+        const seen = new Set(next.map((file) => importFileQueueKey(file)));
+        for (const file of supportedFiles) {
+          const key = importFileQueueKey(file);
+          if (!seen.has(key)) {
+            next.push(file);
+            seen.add(key);
+          }
+        }
+        return next;
+      });
+    }
+
+    if (rejectedNames.length > 0) {
+      setImportStatus(null);
+      setError(`Ignored unsupported file type${rejectedNames.length === 1 ? '' : 's'}: ${rejectedNames.join(', ')}`);
+    }
+  }
+
+  function onImportDialogFileInputChange(event) {
+    const files = event.target?.files ?? null;
+    if (event.target) {
+      event.target.value = '';
+    }
+    addFilesToImportQueue(files);
+  }
+
+  function onImportDialogDragOver(event) {
+    event.preventDefault();
+    setIsImportDragActive(true);
+  }
+
+  function onImportDialogDragLeave(event) {
+    event.preventDefault();
+    if (event.currentTarget === event.target) {
+      setIsImportDragActive(false);
+    }
+  }
+
+  function onImportDialogDrop(event) {
+    event.preventDefault();
+    setIsImportDragActive(false);
+    addFilesToImportQueue(event.dataTransfer?.files ?? null);
+  }
+
+  function removeImportQueuedFile(fileToRemove) {
+    const targetKey = importFileQueueKey(fileToRemove);
+    setImportDialogQueuedFiles((prev) => prev.filter((file) => importFileQueueKey(file) !== targetKey));
   }
 
   function renderImportSampleLinks() {
@@ -2455,29 +2724,107 @@ function App() {
     );
   }
 
-  async function onImportSpreadsheetChange(event) {
-    const file = event.target?.files?.[0] ?? null;
-    if (event.target) {
-      event.target.value = '';
+  function dismissImportStatus() {
+    setImportStatus(null);
+  }
+
+  function renderImportStatusBar() {
+    if (!importStatus) {
+      return null;
     }
-    if (!file) {
+    const details = Array.isArray(importStatus.details) ? importStatus.details : [];
+    return (
+      <div
+        className={`import-status import-status-${importStatus.kind} import-status-box`}
+        role="status"
+        aria-live="polite"
+      >
+        <div className="import-status-head">
+          <p className="import-status-message">{importStatus.message}</p>
+          <button
+            type="button"
+            className="import-status-close"
+            aria-label="Dismiss import status"
+            onClick={dismissImportStatus}
+          >
+            X
+          </button>
+        </div>
+        {details.length > 0 ? (
+          <ul className="import-status-list">
+            {details.map((detailLine) => (
+              <li key={detailLine}>{detailLine}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    );
+  }
+
+  async function confirmImportSpreadsheetUpload() {
+    if (isImporting || importDialogQueuedFiles.length === 0) {
       return;
     }
+    const filesToImport = [...importDialogQueuedFiles];
+    setIsImportDialogOpen(false);
+    setIsImportDragActive(false);
+    setImportDialogQueuedFiles([]);
 
     setError('');
     setImportStatus(null);
     setIsImporting(true);
 
+    const importSuccesses = [];
+    const importFailures = [];
+
     try {
-      const imported = await importSpreadsheetFrame(file);
-      setImportStatus({
-        kind: 'success',
-        message: `Imported ${imported.parsedCourseCount} class${imported.parsedCourseCount === 1 ? '' : 'es'} from ${imported.sourceLabel}. Auto-selected ${imported.schedulableSelectedCount} schedulable class${imported.schedulableSelectedCount === 1 ? '' : 'es'}.`,
+      for (const file of filesToImport) {
+        try {
+          const imported = await importSpreadsheetFrame(file);
+          importSuccesses.push(imported);
+        } catch (importError) {
+          importFailures.push({
+            fileName: String(file?.name || 'unknown-file').trim() || 'unknown-file',
+            message: importError instanceof Error ? importError.message : 'Import failed.',
+            details: Array.isArray(importError?.importErrorDetails)
+              ? importError.importErrorDetails
+                  .map((detail) => String(detail || '').trim())
+                  .filter(Boolean)
+              : [],
+          });
+        }
+      }
+
+      const importedFileCount = importSuccesses.length;
+      const totalFileCount = filesToImport.length;
+      const importedClassCount = importSuccesses.reduce((sum, entry) => sum + entry.parsedCourseCount, 0);
+      const importedSelectedCount = importSuccesses.reduce((sum, entry) => sum + entry.schedulableSelectedCount, 0);
+      const failureDetailLines = importFailures.flatMap((entry) => {
+        if (entry.details.length > 0) {
+          return entry.details.map((detail) => `${entry.fileName}: ${detail}`);
+        }
+        return [`${entry.fileName}: ${entry.message}`];
       });
-    } catch (importError) {
-      const message = importError instanceof Error ? importError.message : 'Import failed.';
-      setImportStatus({ kind: 'error', message });
-      setError(message);
+
+      if (importFailures.length === 0) {
+        setImportStatus({
+          kind: 'success',
+          message: `Imported ${importedFileCount} file${importedFileCount === 1 ? '' : 's'} (${importedClassCount} class${importedClassCount === 1 ? '' : 'es'}). Auto-selected ${importedSelectedCount} schedulable class${importedSelectedCount === 1 ? '' : 'es'}.`,
+          details: [],
+        });
+        return;
+      }
+
+      if (importedFileCount > 0) {
+        const summary = `Import completed with errors. Imported ${importedFileCount} of ${totalFileCount} file${totalFileCount === 1 ? '' : 's'} (${importedClassCount} class${importedClassCount === 1 ? '' : 'es'}). Failed ${importFailures.length} file${importFailures.length === 1 ? '' : 's'}.`;
+        setImportStatus(null);
+        setError(buildImportFailureErrorMessage(summary, failureDetailLines));
+        return;
+      }
+
+      const allFailedMessage = `Import failed for ${totalFileCount} file${totalFileCount === 1 ? '' : 's'}.`;
+      setImportStatus(null);
+      setError(buildImportFailureErrorMessage(allFailedMessage, failureDetailLines));
     } finally {
       setIsImporting(false);
     }
@@ -4214,7 +4561,35 @@ function App() {
 
       {error ? (
         <div className="error-box">
-          <p>{error}</p>
+          <div className="error-box-header">
+            <div className="error-box-message">
+              {parsedErrorDisplay.summary ? <p>{parsedErrorDisplay.summary}</p> : null}
+              {parsedErrorDisplay.bullets.length > 0 ? (
+                <ul className="error-bullet-list">
+                  {parsedErrorDisplay.bullets.map((entry) => (
+                    <li key={`${entry.text}|${entry.recommendedFix}`}>
+                      <span>{entry.text}</span>
+                      {entry.recommendedFix ? (
+                        <ul className="error-fix-list">
+                          <li>
+                            <em>Recommended fix: {entry.recommendedFix}</em>
+                          </li>
+                        </ul>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="error-dismiss-button"
+              onClick={() => setError('')}
+              aria-label="Dismiss error message"
+            >
+              X
+            </button>
+          </div>
           {storageRecoveryNeeded ? (
             <>
               <p className="error-recovery-hint">{recoveryReloadHint}</p>
@@ -4242,25 +4617,16 @@ function App() {
                   <button
                     type="button"
                     className="view-toggle-button import-trigger-button"
-                    onClick={openImportFilePicker}
+                    onClick={openImportDialog}
                     disabled={loading || isImporting}
                     aria-label="Import a spreadsheet file"
                   >
                     {isImporting ? 'Importing...' : 'Import'}
                   </button>
                 </div>
-                <input
-                  ref={importFileInputRef}
-                  className="import-file-input"
-                  type="file"
-                  accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                  onChange={onImportSpreadsheetChange}
-                />
                 <p className="import-note">Import a spreadsheet to create a course frame and auto-select classes.</p>
                 {renderImportSampleLinks()}
-                {importStatus ? (
-                  <p className={`import-status import-status-${importStatus.kind}`}>{importStatus.message}</p>
-                ) : null}
+                {renderImportStatusBar()}
               </div>
             </div>
           </div>
@@ -4279,25 +4645,16 @@ function App() {
                     <button
                       type="button"
                       className="view-toggle-button import-trigger-button"
-                      onClick={openImportFilePicker}
+                      onClick={openImportDialog}
                       disabled={loading || isImporting}
                       aria-label="Import a spreadsheet file"
                     >
                       {isImporting ? 'Importing...' : 'Import'}
                     </button>
                   </div>
-                  <input
-                    ref={importFileInputRef}
-                    className="import-file-input"
-                    type="file"
-                    accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    onChange={onImportSpreadsheetChange}
-                  />
                   <p className="import-note">Adds a new imported frame and auto-selects schedulable classes.</p>
                   {renderImportSampleLinks()}
-                  {importStatus ? (
-                    <p className={`import-status import-status-${importStatus.kind}`}>{importStatus.message}</p>
-                  ) : null}
+                  {renderImportStatusBar()}
                 </div>
 
                 <div className="tools-group tools-group-export" aria-label="Export controls">
@@ -5127,6 +5484,100 @@ function App() {
             </section>
           ) : null}
         </section>
+      ) : null}
+
+      {isImportDialogOpen ? (
+        <div className="import-dialog-overlay" role="presentation" onClick={closeImportDialog}>
+          <aside
+            className="import-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Import spreadsheet files"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="import-dialog-header">
+              <h3>Import CSV/XLSX</h3>
+              <button
+                type="button"
+                className="detail-close-button"
+                aria-label="Close import dialog"
+                onClick={closeImportDialog}
+                disabled={isImporting}
+              >
+                X
+              </button>
+            </div>
+            <p className="import-dialog-subtitle">
+              Choose files or drag and drop them below, then confirm to import them together.
+            </p>
+            <div className="import-dialog-actions-row">
+              <button
+                type="button"
+                className="view-toggle-button import-trigger-button import-dialog-choose-button"
+                onClick={triggerImportDialogFilePicker}
+                disabled={isImporting}
+              >
+                Choose Files
+              </button>
+              <button
+                type="button"
+                className="view-toggle-button import-dialog-clear-button"
+                onClick={() => setImportDialogQueuedFiles([])}
+                disabled={isImporting || importDialogQueuedFiles.length === 0}
+              >
+                Clear List
+              </button>
+              <button
+                type="button"
+                className="view-toggle-button import-dialog-confirm-button"
+                onClick={confirmImportSpreadsheetUpload}
+                disabled={isImporting || importDialogQueuedFiles.length === 0}
+              >
+                {isImporting ? 'Importing...' : `Confirm Upload${importDialogQueuedFiles.length ? ` (${importDialogQueuedFiles.length})` : ''}`}
+              </button>
+            </div>
+            <input
+              ref={importDialogFileInputRef}
+              className="import-file-input"
+              type="file"
+              multiple
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={onImportDialogFileInputChange}
+            />
+            <div
+              className={`import-dropzone ${isImportDragActive ? 'import-dropzone-active' : ''}`}
+              onDragOver={onImportDialogDragOver}
+              onDragEnter={onImportDialogDragOver}
+              onDragLeave={onImportDialogDragLeave}
+              onDrop={onImportDialogDrop}
+            >
+              <p>Drag and drop one or more CSV/XLSX files here.</p>
+              <p>Supported extensions: .csv, .xlsx</p>
+            </div>
+            {importDialogQueuedFiles.length > 0 ? (
+              <ul className="import-file-queue-list">
+                {importDialogQueuedFiles.map((file) => (
+                  <li key={importFileQueueKey(file)} className="import-file-queue-item">
+                    <span className="import-file-queue-name">{file.name}</span>
+                    <button
+                      type="button"
+                      className="import-file-queue-remove"
+                      onClick={() => removeImportQueuedFile(file)}
+                      disabled={isImporting}
+                      aria-label={`Remove ${file.name} from import list`}
+                    >
+                      X
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="import-dialog-empty">No files selected.</p>
+            )}
+            {renderImportSampleLinks()}
+            {renderImportStatusBar()}
+          </aside>
+        </div>
       ) : null}
 
       {isSearchSyntaxOpen ? (

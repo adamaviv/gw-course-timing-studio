@@ -49,6 +49,69 @@ function compareHeaders(actualHeader) {
   return true;
 }
 
+function analyzeHeaderColumns(actualHeader, rowNumber, errors) {
+  const normalizedColumns = actualHeader.map((value, index) => {
+    const key = normalizeSchemaKey(value);
+    return key || `__blank_header_${index + 1}`;
+  });
+  const expectedSet = new Set(SPREADSHEET_COLUMNS);
+  const seen = new Set();
+  const duplicates = new Set();
+
+  for (let index = 0; index < normalizedColumns.length; index += 1) {
+    const key = normalizedColumns[index];
+    if (key.startsWith('__blank_header_')) {
+      addError(errors, rowNumber, 'header.blank', `Header column ${index + 1} is blank.`);
+      continue;
+    }
+    if (seen.has(key)) {
+      duplicates.add(key);
+      continue;
+    }
+    seen.add(key);
+  }
+
+  if (duplicates.size > 0) {
+    addError(errors, rowNumber, 'header.duplicate', `Duplicate header columns: ${[...duplicates].sort().join(', ')}.`);
+  }
+
+  const missingColumns = SPREADSHEET_COLUMNS.filter((column) => !seen.has(column));
+  if (missingColumns.length > 0) {
+    addError(
+      errors,
+      rowNumber,
+      'header.missing',
+      `Missing required header column${missingColumns.length === 1 ? '' : 's'}: ${missingColumns.join(', ')}.`
+    );
+  }
+
+  const unexpectedColumns = [...seen].filter((column) => !expectedSet.has(column)).sort();
+  if (unexpectedColumns.length > 0) {
+    addError(
+      errors,
+      rowNumber,
+      'header.unexpected',
+      `Unexpected header column${unexpectedColumns.length === 1 ? '' : 's'}: ${unexpectedColumns.join(', ')}.`
+    );
+  }
+
+  if (
+    missingColumns.length === 0 &&
+    unexpectedColumns.length === 0 &&
+    duplicates.size === 0 &&
+    !compareHeaders(actualHeader)
+  ) {
+    addError(
+      errors,
+      rowNumber,
+      'header.order',
+      'Header columns must follow schema order exactly.'
+    );
+  }
+
+  return normalizedColumns;
+}
+
 function addError(errors, rowNumber, column, message) {
   errors.push({ rowNumber, column, message });
 }
@@ -425,6 +488,7 @@ function normalizeDataRow(rawRow, headerColumns, rowNumber, errors) {
   }
 
   const row = { ...source };
+  row.__sourceRowNumber = rowNumber;
   row.class_uid = row.class_uid || `row-${rowNumber}`;
 
   row.__hadExplicitCrn = Boolean(normalizeText(source.crn));
@@ -517,7 +581,7 @@ function validateRelationReferences(rows, errors) {
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
-    const rowNumber = index + 1;
+    const rowNumber = Number.isFinite(row.__sourceRowNumber) ? row.__sourceRowNumber : index + 1;
 
     if (row.relation_type === RELATION_TYPE_LINKED) {
       if (!row.__hadExplicitCrn) {
@@ -641,6 +705,7 @@ function buildRowsFromParsedGrid(gridRows, options = {}) {
   }
 
   const headerRow = stripTrailingEmptyCells(rows[headerRowIndex] ?? []);
+  const headerColumns = analyzeHeaderColumns(headerRow, headerRowIndex + 1, errors);
   if (!compareHeaders(headerRow)) {
     addError(
       errors,
@@ -648,7 +713,6 @@ function buildRowsFromParsedGrid(gridRows, options = {}) {
       'header',
       `Header columns must exactly match schema v${SPREADSHEET_SCHEMA_VERSION}.`
     );
-    return { ok: false, meta, comments, rows: [], errors };
   }
 
   const dataRows = [];
@@ -663,7 +727,7 @@ function buildRowsFromParsedGrid(gridRows, options = {}) {
       break;
     }
 
-    const normalized = normalizeDataRow(rawRow, SPREADSHEET_COLUMNS, i + 1, errors);
+    const normalized = normalizeDataRow(rawRow, headerColumns, i + 1, errors);
     dataRows.push(normalized);
   }
 
@@ -755,7 +819,21 @@ export async function parseSpreadsheetXlsxBuffer(bufferLike, options = {}) {
       : bufferLike instanceof ArrayBuffer
         ? new Uint8Array(bufferLike)
         : new Uint8Array();
-  await workbook.xlsx.load(input);
+  try {
+    await workbook.xlsx.load(input);
+  } catch (error) {
+    const message =
+      error instanceof Error && normalizeText(error.message)
+        ? normalizeText(error.message)
+        : 'Workbook could not be parsed as a valid .xlsx file.';
+    return {
+      ok: false,
+      meta: defaultSpreadsheetMeta(),
+      comments: [],
+      rows: [],
+      errors: [{ rowNumber: null, column: 'xlsx_format', message }],
+    };
+  }
 
   const preferredSheetName = normalizeText(options.sheetName);
   const worksheet =
