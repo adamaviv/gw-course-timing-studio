@@ -1,13 +1,22 @@
 import { decompressFromEncodedURIComponent, compressToEncodedURIComponent } from 'lz-string';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { zipSync, strToU8 } from 'fflate';
 import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 import { getRecoveryReloadHint } from '../shared/recoveryHints.js';
 import { buildCourseWarnings } from './courseWarnings.js';
+import { buildImportedCoursesFromSpreadsheetRows } from './importedFrameMapper.js';
 import {
   extractNormalizedCourseNumbers,
   matchesParsedCourseSearchQuery,
   parseCourseSearchQuery,
 } from './searchDsl.js';
+import {
+  formatMeetingPattern,
+  parseSpreadsheetCsv,
+  parseSpreadsheetXlsxBuffer,
+  serializeSpreadsheetCsv,
+  serializeSpreadsheetXlsx,
+} from './spreadsheetCodec.js';
 
 // Update these defaults each scheduling cycle.
 const DEFAULT_SELECTION = {
@@ -66,6 +75,7 @@ const SHARE_QUERY_PARAM_VERSION = 'share_v';
 const SHARE_QUERY_PARAM_TERM = 'share_t';
 const SHARE_QUERY_PARAM_FRAME = 'share_f';
 const SHARE_QUERY_PARAM_SELECTION = 'share_sel';
+const SHARE_QUERY_PARAM_IMPORTED_SELECTION = 'share_imp_sel';
 const SHARE_QUERY_PARAM_ONLY_SELECTED = 'share_only_sel';
 const SHARE_QUERY_PARAM_SHOW_CANCELLED = 'share_show_cancel';
 const SHARE_QUERY_PARAM_DAY = 'share_day';
@@ -77,6 +87,7 @@ const SHARE_QUERY_KEYS = [
   SHARE_QUERY_PARAM_TERM,
   SHARE_QUERY_PARAM_FRAME,
   SHARE_QUERY_PARAM_SELECTION,
+  SHARE_QUERY_PARAM_IMPORTED_SELECTION,
   SHARE_QUERY_PARAM_ONLY_SELECTED,
   SHARE_QUERY_PARAM_SHOW_CANCELLED,
   SHARE_QUERY_PARAM_DAY,
@@ -92,9 +103,400 @@ const MAX_SHARE_DECOMPRESSED_CHARS = 120_000;
 const MAX_SHARE_FRAME_COUNT = 24;
 const MAX_SHARE_SELECTION_ENTRIES = 1_200;
 const MAX_SHARE_CRN_COUNT = 4_000;
+const IMPORT_STATUS_RESET_MS = 8000;
+const EXPORT_STATUS_RESET_MS = 8000;
+const EXPORT_FORMAT_CSV = 'csv';
+const EXPORT_FORMAT_XLSX = 'xlsx';
 
 function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+function suggestedFixForSpreadsheetImportError(entry) {
+  const column = String(entry?.column || '')
+    .trim()
+    .toLowerCase();
+  const message = String(entry?.message || '')
+    .trim()
+    .toLowerCase();
+
+  if (column === 'term_id' || column === 'meta.term_id' || message.includes('term_id')) {
+    return 'Use a 6-digit term_id such as 202603.';
+  }
+  if (column === 'campus_id' || column === 'meta.campus_id' || message.includes('campus_id')) {
+    return 'Use a supported campus_id: 1, 2, 3, 4, 6, 7, or 8.';
+  }
+  if (column === 'subject_id' || column === 'meta.subject_id' || message.includes('subject_id')) {
+    return 'Use an uppercase subject code such as CSCI.';
+  }
+  if (column === 'meta.key') {
+    return 'Use a #meta row with key/value, for example: #meta,term_id,202603.';
+  }
+  if (column === 'header.blank') {
+    return 'Fill every header cell using the schema column names, with no blanks.';
+  }
+  if (column === 'header.duplicate') {
+    return 'Remove duplicate header names so each schema column appears only once.';
+  }
+  if (column === 'header.missing') {
+    return 'Add all missing schema header columns exactly as documented in the template.';
+  }
+  if (column === 'header.unexpected') {
+    return 'Remove non-schema header columns or rename them to valid schema columns.';
+  }
+  if (column === 'header.order') {
+    return 'Reorder header columns to match the template schema order exactly.';
+  }
+  if (column.startsWith('meta.')) {
+    return 'Ensure required metadata rows exist: term_id, campus_id, and subject_id.';
+  }
+  if (column === 'crn') {
+    if (message.includes('linked rows require an explicit crn')) {
+      return 'Linked rows must include their own CRN in the crn column.';
+    }
+    return 'Use numeric CRNs only (typically 5 digits).';
+  }
+  if (column === 'relation_type') {
+    return 'Allowed relation_type values are: primary, linked, or cross-listed.';
+  }
+  if (column === 'linked_parent_crn') {
+    return 'Set linked_parent_crn to a primary row CRN that exists in the same file.';
+  }
+  if (column === 'crosslist_group') {
+    return 'Use the same crosslist_group value across at least two cross-listed rows.';
+  }
+  if (column === 'crosslist_crns') {
+    return 'Provide a CRN list separated by | or , and include every group member CRN, including this row CRN.';
+  }
+  if (column === 'meeting_pattern') {
+    return 'Use meeting format like: MWF 10:00 AM-10:50 AM | R 2:00 PM-3:15 PM.';
+  }
+  if (column === 'xlsx_format') {
+    return 'Upload a valid .xlsx file or save/export the spreadsheet again before importing.';
+  }
+  if (message.includes('missing required meta key')) {
+    return 'Add missing #meta rows for term_id, campus_id, and subject_id.';
+  }
+  return '';
+}
+
+function buildSpreadsheetImportErrorReport(errors, maxItems = Number.POSITIVE_INFINITY) {
+  const entries = Array.isArray(errors) ? errors : [];
+  if (entries.length === 0) {
+    return {
+      summary: 'Import failed due to an unknown validation error.',
+      details: [],
+    };
+  }
+  const normalizedMaxItems = Number.isFinite(maxItems) ? Math.max(1, Math.floor(maxItems)) : entries.length;
+  const details = entries.slice(0, normalizedMaxItems).map((entry) => {
+    const rowPrefix = Number.isFinite(entry?.rowNumber) ? `Line ${entry.rowNumber}` : 'File';
+    const column = String(entry?.column || '').trim();
+    const columnText = column ? ` (${column})` : '';
+    const message = String(entry?.message || 'Unknown validation issue.').trim();
+    const suggestedFix = suggestedFixForSpreadsheetImportError(entry);
+    return suggestedFix
+      ? `${rowPrefix}${columnText}: ${message}\n    Recommended fix: ${suggestedFix}`
+      : `${rowPrefix}${columnText}: ${message}`;
+  });
+  const remaining = entries.length - details.length;
+  const detailsWithRemainder = [...details];
+  if (remaining > 0) {
+    detailsWithRemainder.push(`...and ${remaining} additional issue${remaining === 1 ? '' : 's'}.`);
+  }
+  return {
+    summary: `Import validation failed with ${entries.length} issue${entries.length === 1 ? '' : 's'}.`,
+    details: detailsWithRemainder,
+  };
+}
+
+function formatSpreadsheetImportErrors(errors, maxItems = 6) {
+  const report = buildSpreadsheetImportErrorReport(errors, maxItems);
+  if (!report.details.length) {
+    return report.summary;
+  }
+  return `${report.summary} ${report.details.join(' | ')}`;
+}
+
+function buildImportFailureErrorMessage(summary, detailLines) {
+  const details = Array.isArray(detailLines)
+    ? detailLines.map((line) => String(line || '').trim()).filter(Boolean)
+    : [];
+  if (details.length === 0) {
+    return summary;
+  }
+  const formattedDetails = details.map((line) => {
+    const [baseLine, ...remaining] = line.split('\n');
+    const recommendedFixPrefix = 'Recommended fix:';
+    const recommendedFixLine = remaining
+      .map((entry) => String(entry || '').trim())
+      .find((entry) => entry.toLowerCase().startsWith(recommendedFixPrefix.toLowerCase()));
+    if (!recommendedFixLine) {
+      return `* ${baseLine.trim()}`;
+    }
+    const recommendedFixText = recommendedFixLine.slice(recommendedFixPrefix.length).trim();
+    return `* ${baseLine.trim()}\n   * *Recommended fix: ${recommendedFixText}*`;
+  });
+  return `${summary}\n${formattedDetails.join('\n')}`;
+}
+
+function parseStructuredErrorText(message) {
+  const raw = String(message || '');
+  const lines = raw.split('\n');
+  const bulletStartIndex = lines.findIndex((line) => /^\*\s+/.test(line.trim()));
+  if (bulletStartIndex < 0) {
+    return { summary: raw, bullets: [] };
+  }
+
+  const summary = lines
+    .slice(0, bulletStartIndex)
+    .join('\n')
+    .trim();
+  const bullets = [];
+  let activeBullet = null;
+
+  for (const rawLine of lines.slice(bulletStartIndex)) {
+    const line = String(rawLine || '');
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (/^\*\s+\*recommended fix:/i.test(trimmed) && activeBullet) {
+      const fixText = trimmed
+        .replace(/^\*\s+\*recommended fix:\s*/i, '')
+        .replace(/\*+$/g, '')
+        .trim();
+      activeBullet.recommendedFix = fixText;
+      continue;
+    }
+    if (/^\*\s+/.test(trimmed)) {
+      activeBullet = {
+        text: trimmed.replace(/^\*\s+/, '').trim(),
+        recommendedFix: '',
+      };
+      bullets.push(activeBullet);
+      continue;
+    }
+    if (activeBullet) {
+      activeBullet.text = `${activeBullet.text} ${trimmed}`.trim();
+    }
+  }
+
+  return { summary, bullets };
+}
+
+function normalizeSpreadsheetMetaForImport(meta) {
+  const rawMeta = meta && typeof meta === 'object' ? meta : {};
+  const termId = String(rawMeta.term_id || '').trim();
+  const campusId = String(rawMeta.campus_id || '').trim();
+  const subjectId = normalizeSubjectIdValue(rawMeta.subject_id);
+  const subjectLabel = String(rawMeta.subject_label || '').trim() || subjectId;
+  const campusLabel = String(rawMeta.campus_label || '').trim() || campusLabelForCampusId(campusId);
+  const sourceLabel = String(rawMeta.source_label || '').trim();
+  return {
+    termId,
+    campusId,
+    subjectId,
+    subjectLabel,
+    campusLabel,
+    sourceLabel,
+  };
+}
+
+function isCsvImportFile(file) {
+  const fileName = String(file?.name || '').trim().toLowerCase();
+  const mimeType = String(file?.type || '').trim().toLowerCase();
+  return fileName.endsWith('.csv') || fileName.endsWith('.csvf') || mimeType.includes('text/csv') || mimeType === 'text/plain';
+}
+
+function isXlsxImportFile(file) {
+  const fileName = String(file?.name || '').trim().toLowerCase();
+  const mimeType = String(file?.type || '').trim().toLowerCase();
+  return (
+    fileName.endsWith('.xlsx') ||
+    fileName.endsWith('.xlxs') ||
+    mimeType.includes('spreadsheetml.sheet') ||
+    mimeType.includes('application/vnd.ms-excel')
+  );
+}
+
+function isSupportedImportFile(file) {
+  return isCsvImportFile(file) || isXlsxImportFile(file);
+}
+
+function importFileQueueKey(file) {
+  const name = String(file?.name || '').trim().toLowerCase();
+  const size = Number(file?.size) || 0;
+  const modified = Number(file?.lastModified) || 0;
+  return `${name}|${size}|${modified}`;
+}
+
+function sanitizeExportToken(value, fallback = 'value') {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function crnSetForCourse(course) {
+  return [
+    ...new Set(
+      registrationDetailsForCourse(course)
+        .flatMap((detail) => detail.crns ?? [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    ),
+  ].sort();
+}
+
+function normalizeRelationTypeForExport(relationType) {
+  const normalized = String(relationType || '').trim().toLowerCase();
+  if (normalized === 'linked' || normalized === 'cross-listed') {
+    return normalized;
+  }
+  return 'primary';
+}
+
+function normalizeCourseNumberForExport(value, fallbackSubject = '') {
+  const text = String(value || '').trim();
+  if (text) {
+    return text;
+  }
+  return String(fallbackSubject || '').trim();
+}
+
+function commentsByCourseNumber(course) {
+  const mapping = new Map();
+  for (const entry of commentEntriesForCourse(course)) {
+    const key = String(entry.courseNumber || '').trim() || String(course.courseNumber || '').trim() || 'Course';
+    const bucket = mapping.get(key) ?? [];
+    const text = String(entry.text || '')
+      .trim()
+      .replace(/^comments\s*:\s*/i, '')
+      .trim();
+    if (text) {
+      bucket.push(text);
+      mapping.set(key, bucket);
+    }
+  }
+  return mapping;
+}
+
+function titleByCourseNumber(course) {
+  const mapping = new Map();
+  for (const entry of titleEntriesForCourse(course)) {
+    const key = String(entry.courseNumber || '').trim() || String(course.courseNumber || '').trim() || 'Course';
+    const title = String(entry.title || '').trim();
+    if (title && !mapping.has(key)) {
+      mapping.set(key, title);
+    }
+  }
+  return mapping;
+}
+
+function instructorByCourseNumber(course) {
+  const mapping = new Map();
+  for (const entry of instructorEntriesForCourse(course)) {
+    const key = String(entry.courseNumber || '').trim() || String(course.courseNumber || '').trim() || 'Course';
+    const instructor = String(entry.instructor || '').trim();
+    if (instructor && !mapping.has(key)) {
+      mapping.set(key, instructor);
+    }
+  }
+  return mapping;
+}
+
+function rowsForCourseExport(course, frameSubjectId) {
+  const relationType = normalizeRelationTypeForExport(course.relationType);
+  const registration = registrationDetailsForCourse(course);
+  const commentsLookup = commentsByCourseNumber(course);
+  const titleLookup = titleByCourseNumber(course);
+  const instructorLookup = instructorByCourseNumber(course);
+  const fallbackCourseNumber = normalizeCourseNumberForExport(course.courseNumber, frameSubjectId);
+  const allCrns = crnSetForCourse(course);
+  const crosslistGroup =
+    relationType === 'cross-listed'
+      ? String(course.structuredCrosslistGroup || normalizedCrnListKey(allCrns) || String(course.id || '')).trim()
+      : '';
+  const crosslistCrns = relationType === 'cross-listed' ? allCrns.join('|') : '';
+  const meetingPattern = formatMeetingPattern(course.meetings ?? []);
+  const dateRange = String(course.dateRange || '').trim();
+  const room = String(course.room || '').trim();
+  const credits = String(course.credits || '').trim();
+  const linkedParentCrn = relationType === 'linked' ? String(course.linkedParentCrn || '').trim() : '';
+  const externalSource = String(course.externalSource || '').trim();
+  const importAction = course.importAction && typeof course.importAction === 'object' ? course.importAction : {};
+
+  const rows = [];
+  let rowOrdinal = 1;
+  for (const detail of registration) {
+    const detailCourseNumber = normalizeCourseNumberForExport(detail.courseNumber, frameSubjectId || fallbackCourseNumber);
+    const sections = Array.isArray(detail.sections) && detail.sections.length > 0 ? detail.sections : [course.section];
+    const crns = Array.isArray(detail.crns) && detail.crns.length > 0 ? detail.crns : [course.crn];
+    const span = Math.max(1, sections.length, crns.length);
+    const title = titleLookup.get(detailCourseNumber) || String(course.title || '').trim() || 'Untitled';
+    const instructor = instructorLookup.get(detailCourseNumber) || String(course.instructor || '').trim() || 'TBA';
+    const commentText = (commentsLookup.get(detailCourseNumber) ?? []).join(' | ');
+
+    for (let index = 0; index < span; index += 1) {
+      const crn = String(crns[index] || crns[0] || '').trim();
+      const section = String(sections[index] || sections[0] || '').trim();
+      rows.push({
+        class_uid: `${String(course.id || 'course')}:${sanitizeExportToken(detailCourseNumber, 'course')}:${rowOrdinal}`,
+        crn,
+        course_number: detailCourseNumber,
+        section,
+        title,
+        status: String(course.status || '').trim(),
+        credits,
+        instructor,
+        room,
+        date_range: dateRange,
+        meeting_pattern: meetingPattern,
+        relation_type: relationType,
+        linked_parent_crn: linkedParentCrn,
+        crosslist_group: crosslistGroup,
+        crosslist_crns: crosslistCrns,
+        comment: commentText,
+        action_required: String(importAction.required || '').trim(),
+        action_status: String(importAction.status || '').trim(),
+        action_taken_at: String(importAction.takenAt || '').trim(),
+        action_note: String(importAction.note || '').trim(),
+        external_source: externalSource,
+      });
+      rowOrdinal += 1;
+    }
+  }
+
+  if (rows.length === 0) {
+    rows.push({
+      class_uid: `${String(course.id || 'course')}:1`,
+      crn: String(course.crn || '').trim(),
+      course_number: fallbackCourseNumber,
+      section: String(course.section || '').trim(),
+      title: String(course.title || '').trim() || 'Untitled',
+      status: String(course.status || '').trim(),
+      credits,
+      instructor: String(course.instructor || '').trim() || 'TBA',
+      room,
+      date_range: dateRange,
+      meeting_pattern: meetingPattern,
+      relation_type: relationType,
+      linked_parent_crn: linkedParentCrn,
+      crosslist_group: crosslistGroup,
+      crosslist_crns: crosslistCrns,
+      comment: '',
+      action_required: String(importAction.required || '').trim(),
+      action_status: String(importAction.status || '').trim(),
+      action_taken_at: String(importAction.takenAt || '').trim(),
+      action_note: String(importAction.note || '').trim(),
+      external_source: externalSource,
+    });
+  }
+
+  return rows;
 }
 
 function termLabelForTermId(termId) {
@@ -255,6 +657,10 @@ function namespaceCourses(courses, frameKey, frameMeta) {
     frameTermLabel: frameMeta.termLabel,
     frameCampusId: frameMeta.campusId,
     frameCampusLabel: frameMeta.campusLabel,
+    frameSourceType: frameMeta.sourceType || 'gw',
+    frameSourceLabel: frameMeta.sourceLabel || '',
+    sourceType: String(course?.sourceType || '').trim() || frameMeta.sourceType || 'gw',
+    sourceLabel: String(course?.sourceLabel || '').trim() || frameMeta.sourceLabel || '',
   }));
 }
 
@@ -464,6 +870,13 @@ function normalizedCrnListForCourse(course) {
   ].sort();
 }
 
+function isImportedCourse(course) {
+  return (
+    String(course?.sourceType || '').trim().toLowerCase() === 'import' ||
+    String(course?.frameSourceType || '').trim().toLowerCase() === 'import'
+  );
+}
+
 function normalizedCrnListKey(crns) {
   return [...new Set((crns ?? []).map((value) => String(value || '').trim()).filter(Boolean))]
     .sort()
@@ -499,16 +912,14 @@ function parseAndValidateSharePayload(rawPayload) {
     return { error: 'Share payload has an invalid term.' };
   }
 
-  if (!Array.isArray(rawPayload.f) || rawPayload.f.length === 0) {
-    return { error: 'Share payload has no subject frames.' };
-  }
-  if (rawPayload.f.length > MAX_SHARE_FRAME_COUNT) {
+  const rawFrames = Array.isArray(rawPayload.f) ? rawPayload.f : [];
+  if (rawFrames.length > MAX_SHARE_FRAME_COUNT) {
     return { error: 'Share payload includes too many subject frames.' };
   }
 
   const frameByKey = new Map();
   const frames = [];
-  for (const frame of rawPayload.f) {
+  for (const frame of rawFrames) {
     const campusId = String(frame?.c || '').trim();
     const subjectId = normalizeSubjectIdValue(frame?.s);
     if (!isValidShareCampusId(campusId) || !isValidShareSubjectId(subjectId)) {
@@ -598,13 +1009,50 @@ function parseAndValidateSharePayload(rawPayload) {
   }
   const dedupedSelectedCrns = [...new Set(selectedCrns)].sort();
 
+  const importedSelectedCrnInput = Array.isArray(rawPayload.isc) ? rawPayload.isc : [];
+  if (importedSelectedCrnInput.length > MAX_SHARE_CRN_COUNT) {
+    return { error: 'Share payload includes too many imported selected CRNs.' };
+  }
+  const importedSelectedCrns = [];
+  for (const rawCrn of importedSelectedCrnInput) {
+    const crn = String(rawCrn || '').trim();
+    if (!crn) {
+      continue;
+    }
+    if (!/^\d{3,10}$/.test(crn)) {
+      return { error: 'Share payload has invalid imported selected class CRNs.' };
+    }
+    importedSelectedCrns.push(crn);
+    if (importedSelectedCrns.length > MAX_SHARE_CRN_COUNT) {
+      return { error: 'Share payload includes too many imported selected CRNs.' };
+    }
+  }
+  const dedupedImportedSelectedCrns = [...new Set(importedSelectedCrns)].sort();
+
+  const hasImportedOnlySelections =
+    dedupedImportedSelectedCrns.length > 0 &&
+    dedupedSelectedCrns.length === 0 &&
+    dedupedSelection.length === 0;
+  const normalizedFrames = hasImportedOnlySelections ? [] : frames;
+
+  if (normalizedFrames.length === 0 && dedupedSelectedCrns.length > 0) {
+    return { error: 'Share payload has selected class CRNs but no subject frames.' };
+  }
+  if (normalizedFrames.length === 0 && dedupedSelection.length > 0) {
+    return { error: 'Share payload has selected class references but no subject frames.' };
+  }
+  if (normalizedFrames.length === 0 && dedupedImportedSelectedCrns.length === 0) {
+    return { error: 'Share payload has no subject frames.' };
+  }
+
   return {
     payload: {
       v: SHARE_STATE_VERSION,
       t: termId,
-      f: frames,
+      f: normalizedFrames,
       sel: dedupedSelection,
       sc: dedupedSelectedCrns,
+      isc: dedupedImportedSelectedCrns,
       ui,
     },
   };
@@ -684,6 +1132,7 @@ function parseReadableSharePayload(searchParams) {
     searchParams.has(SHARE_QUERY_PARAM_TERM) ||
     searchParams.has(SHARE_QUERY_PARAM_FRAME) ||
     searchParams.has(SHARE_QUERY_PARAM_SELECTION) ||
+    searchParams.has(SHARE_QUERY_PARAM_IMPORTED_SELECTION) ||
     searchParams.has(SHARE_QUERY_PARAM_ONLY_SELECTED) ||
     searchParams.has(SHARE_QUERY_PARAM_SHOW_CANCELLED) ||
     searchParams.has(SHARE_QUERY_PARAM_DAY) ||
@@ -703,9 +1152,6 @@ function parseReadableSharePayload(searchParams) {
   }
 
   const frameTokens = searchParams.getAll(SHARE_QUERY_PARAM_FRAME).map((value) => String(value || '').trim()).filter(Boolean);
-  if (frameTokens.length === 0) {
-    return { error: 'Share payload has no subject frames.' };
-  }
   if (frameTokens.length > MAX_SHARE_FRAME_COUNT) {
     return { error: 'Share payload includes too many subject frames.' };
   }
@@ -768,6 +1214,22 @@ function parseReadableSharePayload(searchParams) {
     }
   }
 
+  const importedSelectionTokens = searchParams
+    .getAll(SHARE_QUERY_PARAM_IMPORTED_SELECTION)
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const importedSelectedCrns = [];
+  for (const token of importedSelectionTokens) {
+    const normalizedCrns = parseCrnListText(token);
+    if (!normalizedCrns || normalizedCrns.length === 0) {
+      return { error: 'Share payload has invalid imported selected class CRNs.' };
+    }
+    importedSelectedCrns.push(...normalizedCrns);
+    if (importedSelectedCrns.length > MAX_SHARE_CRN_COUNT) {
+      return { error: 'Share payload includes too many imported selected CRNs.' };
+    }
+  }
+
   const dayText = String(searchParams.get(SHARE_QUERY_PARAM_DAY) || '')
     .trim()
     .toUpperCase();
@@ -784,6 +1246,7 @@ function parseReadableSharePayload(searchParams) {
     f: frames,
     sel: selection,
     sc: selectedCrns,
+    isc: importedSelectedCrns,
     ui,
   });
 }
@@ -837,6 +1300,9 @@ function buildShareUrlFromPayload(payload, searchValue, baseUrl, maxLength) {
   }
   if (Array.isArray(payload.sc) && payload.sc.length > 0) {
     readableParams.set(SHARE_QUERY_PARAM_SELECTION, payload.sc.join(','));
+  }
+  if (Array.isArray(payload.isc) && payload.isc.length > 0) {
+    readableParams.set(SHARE_QUERY_PARAM_IMPORTED_SELECTION, payload.isc.join(','));
   }
   readableParams.set(SHARE_QUERY_PARAM_ONLY_SELECTED, payload.ui?.onlySel ? '1' : '0');
   readableParams.set(SHARE_QUERY_PARAM_SHOW_CANCELLED, payload.ui?.showCancel ? '1' : '0');
@@ -1052,6 +1518,7 @@ function buildCalendar(courses, activeCourseId) {
 }
 
 function App() {
+  const importDialogFileInputRef = useRef(null);
   const [campusId, setCampusId] = useState(DEFAULT_SELECTION.campusId);
   const [termId, setTermId] = useState(DEFAULT_SELECTION.termId);
   const [subjectId, setSubjectId] = useState(DEFAULT_SELECTION.subjectId);
@@ -1089,9 +1556,19 @@ function App() {
   const [printIncludeSelectedList, setPrintIncludeSelectedList] = useState(true);
   const [shareIncludePreview, setShareIncludePreview] = useState(false);
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
+  const [isImportDragActive, setIsImportDragActive] = useState(false);
+  const [isGlobalImportDragActive, setIsGlobalImportDragActive] = useState(false);
+  const [importDialogQueuedFiles, setImportDialogQueuedFiles] = useState([]);
+  const [importStatus, setImportStatus] = useState(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportFormat, setExportFormat] = useState(EXPORT_FORMAT_CSV);
+  const [exportStatus, setExportStatus] = useState(null);
   const [shareStatus, setShareStatus] = useState(null);
   const [pendingShareRestoreSelection, setPendingShareRestoreSelection] = useState(null);
   const [pendingShareRestorePreview, setPendingShareRestorePreview] = useState(false);
+  const globalFileDragDepthRef = useRef(0);
   const hasProcessedShareLinkRef = useRef(false);
   const isShareRestoreInFlightRef = useRef(false);
   const previewManagedByHistoryRef = useRef(false);
@@ -1249,6 +1726,26 @@ function App() {
   }, [shareStatus]);
 
   useEffect(() => {
+    if (!importStatus || importStatus.kind !== 'success') {
+      return undefined;
+    }
+    const timerId = window.setTimeout(() => {
+      setImportStatus(null);
+    }, IMPORT_STATUS_RESET_MS);
+    return () => window.clearTimeout(timerId);
+  }, [importStatus]);
+
+  useEffect(() => {
+    if (!exportStatus) {
+      return undefined;
+    }
+    const timerId = window.setTimeout(() => {
+      setExportStatus(null);
+    }, EXPORT_STATUS_RESET_MS);
+    return () => window.clearTimeout(timerId);
+  }, [exportStatus]);
+
+  useEffect(() => {
     if (!isSearchSyntaxOpen) {
       return undefined;
     }
@@ -1260,6 +1757,94 @@ function App() {
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);
   }, [isSearchSyntaxOpen]);
+
+  useEffect(() => {
+    if (!isImportDialogOpen || isImporting) {
+      return undefined;
+    }
+    function handleKeydown(event) {
+      if (event.key === 'Escape') {
+        setIsImportDialogOpen(false);
+        setIsImportDragActive(false);
+      }
+    }
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  }, [isImportDialogOpen, isImporting]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    function hasFiles(event) {
+      const types = event?.dataTransfer?.types;
+      return Boolean(types && typeof types.includes === 'function' && types.includes('Files'));
+    }
+
+    function onDragEnter(event) {
+      if (!hasFiles(event) || isImportDialogOpen) {
+        return;
+      }
+      event.preventDefault();
+      globalFileDragDepthRef.current += 1;
+      setIsGlobalImportDragActive(true);
+    }
+
+    function onDragOver(event) {
+      if (!hasFiles(event) || isImportDialogOpen) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+      setIsGlobalImportDragActive(true);
+    }
+
+    function onDragLeave(event) {
+      if (!hasFiles(event) || isImportDialogOpen) {
+        return;
+      }
+      event.preventDefault();
+      globalFileDragDepthRef.current = Math.max(0, globalFileDragDepthRef.current - 1);
+      if (globalFileDragDepthRef.current === 0) {
+        setIsGlobalImportDragActive(false);
+      }
+    }
+
+    function onDrop(event) {
+      if (!hasFiles(event)) {
+        return;
+      }
+      event.preventDefault();
+      globalFileDragDepthRef.current = 0;
+      setIsGlobalImportDragActive(false);
+      if (isImportDialogOpen || isImporting) {
+        return;
+      }
+      const { supportedFiles, rejectedNames } = splitSupportedImportFiles(event.dataTransfer?.files ?? null);
+      if (rejectedNames.length > 0) {
+        setImportStatus(null);
+        setError(`Ignored unsupported file type${rejectedNames.length === 1 ? '' : 's'}: ${rejectedNames.join(', ')}`);
+      }
+      if (supportedFiles.length > 0) {
+        void importSpreadsheetFilesBatch(supportedFiles);
+      }
+    }
+
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [isImportDialogOpen, isImporting]);
 
   useEffect(() => {
     if (!warningDialogCourseId) {
@@ -1276,6 +1861,7 @@ function App() {
 
   const selectedTermLabel = useMemo(() => termLabelForTermId(termId), [termId]);
   const recoveryReloadHint = useMemo(() => getRecoveryReloadHint(), []);
+  const parsedErrorDisplay = useMemo(() => parseStructuredErrorText(error), [error]);
   const orderedRecentSubjects = useMemo(() => {
     const pinned = [];
     const unpinned = [];
@@ -1293,6 +1879,13 @@ function App() {
     [orderedRecentSubjects]
   );
   const courses = useMemo(() => subjectFrames.flatMap((frame) => frame.courses), [subjectFrames]);
+  const frameByKey = useMemo(
+    () =>
+      new Map(
+        subjectFrames.map((frame) => [String(frame.key || '').trim(), frame])
+      ),
+    [subjectFrames]
+  );
 
   useEffect(() => {
     const validIds = new Set(courses.map((course) => course.id));
@@ -1651,6 +2244,8 @@ function App() {
   );
   const canPrint = printCourses.length > 0 && (printIncludeCalendar || printIncludeSelectedList);
   const canShare = selectedCourses.length > 0;
+  const canExportSelected = selectedCourses.length > 0;
+  const exportFormatLabel = exportFormat === EXPORT_FORMAT_XLSX ? 'XLSX' : 'CSV';
   const canSaveState = subjectFrames.length > 0;
   function courseCampusLabel(course) {
     return (
@@ -1726,6 +2321,7 @@ function App() {
   }, [calendar.endMin, calendar.startMin]);
 
   const pxPerMin = 1.15;
+  const dayHeaderHeightPx = 30;
   const bodyHeight = Math.max(520, (calendar.endMin - calendar.startMin) * pxPerMin);
 
   function clearDynamicPrintBreaks() {
@@ -1974,6 +2570,552 @@ function App() {
     return message;
   }
 
+  function clearWorkspaceForTermTransition() {
+    setSubjectFrames([]);
+    setSelectedIds(new Set());
+    setExpandedLinkedParentIds(new Set());
+    setAlwaysSelectLinkedFrameKeys(new Set());
+    setCollapsedFrameKeys(new Set());
+    setIsSelectedFrameCollapsed(true);
+    closeCourseDetails();
+  }
+
+  function nextImportedFrameKey(termIdValue, campusIdValue, subjectIdValue) {
+    const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return `${termIdValue}|${campusIdValue}|${subjectIdValue}|import:${nonce}`;
+  }
+
+  async function parseSpreadsheetImportFile(file) {
+    if (isCsvImportFile(file)) {
+      const text = await file.text();
+      return parseSpreadsheetCsv(text);
+    }
+
+    if (isXlsxImportFile(file)) {
+      const buffer = await file.arrayBuffer();
+      return parseSpreadsheetXlsxBuffer(new Uint8Array(buffer));
+    }
+
+    throw new Error('Unsupported file type. Please import a .csv or .xlsx file.');
+  }
+
+  async function importSpreadsheetFrame(file) {
+    const parsedFile = await parseSpreadsheetImportFile(file);
+    if (!parsedFile.ok) {
+      const report = buildSpreadsheetImportErrorReport(parsedFile.errors);
+      const validationError = new Error(report.summary);
+      validationError.importErrorDetails = report.details;
+      throw validationError;
+    }
+    if (!Array.isArray(parsedFile.rows) || parsedFile.rows.length === 0) {
+      throw new Error('Import file has no class rows after parsing.');
+    }
+
+    const meta = normalizeSpreadsheetMetaForImport(parsedFile.meta);
+    if (!isValidShareTermId(meta.termId)) {
+      throw new Error('Import metadata is missing a valid 6-digit term_id.');
+    }
+    if (!isValidShareCampusId(meta.campusId)) {
+      throw new Error('Import metadata has an invalid campus_id.');
+    }
+    if (!isValidShareSubjectId(meta.subjectId)) {
+      throw new Error('Import metadata has an invalid subject_id.');
+    }
+
+    const hasDifferentTermLoaded = subjectFrames.some((frame) => frame.termId !== meta.termId);
+    if (hasDifferentTermLoaded) {
+      clearWorkspaceForTermTransition();
+    }
+
+    const sourceLabel = meta.sourceLabel || String(file?.name || '').trim() || 'Imported Spreadsheet';
+    const importedCourses = buildImportedCoursesFromSpreadsheetRows(parsedFile.rows, {
+      subjectId: meta.subjectId,
+      sourceLabel,
+    });
+    if (importedCourses.length === 0) {
+      throw new Error('Import completed, but no schedulable/cancelled classes were produced.');
+    }
+
+    const frameKey = nextImportedFrameKey(meta.termId, meta.campusId, meta.subjectId);
+    const frameMeta = {
+      key: frameKey,
+      subjectId: meta.subjectId,
+      subjectLabel: meta.subjectLabel,
+      termId: meta.termId,
+      termLabel: termLabelForTermId(meta.termId),
+      campusId: meta.campusId,
+      campusLabel: meta.campusLabel || campusLabelForCampusId(meta.campusId),
+      parsedCourseCount: importedCourses.length,
+      rawRowCount: parsedFile.rows.length,
+      sourceType: 'import',
+      sourceLabel,
+      importComments: Array.isArray(parsedFile.comments) ? parsedFile.comments.map((entry) => String(entry || '').trim()).filter(Boolean) : [],
+    };
+    const namespacedCourses = namespaceCourses(
+      importedCourses.map((course) => ({
+        ...course,
+        termLabel: frameMeta.termLabel,
+        sourceType: 'import',
+        sourceLabel: frameMeta.sourceLabel,
+      })),
+      frameKey,
+      frameMeta
+    );
+
+    setSubjectFrames((prev) => {
+      return [...prev, { ...frameMeta, courses: namespacedCourses }];
+    });
+    setCollapsedFrameKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(frameKey);
+      return next;
+    });
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      namespacedCourses
+        .filter((course) => isSchedulableCourse(course))
+        .forEach((course) => next.add(course.id));
+      return next;
+    });
+
+    recordRecentSubject({
+      termId: meta.termId,
+      termLabel: frameMeta.termLabel,
+      campusId: meta.campusId,
+      campusLabel: frameMeta.campusLabel,
+      subjectId: meta.subjectId,
+      subjectLabel: meta.subjectLabel,
+    });
+
+    setTermId(meta.termId);
+    setCampusId(meta.campusId);
+    setSubjectId(meta.subjectId);
+
+    return {
+      frameKey,
+      parsedCourseCount: importedCourses.length,
+      schedulableSelectedCount: namespacedCourses.filter((course) => isSchedulableCourse(course)).length,
+      sourceLabel,
+    };
+  }
+
+  function openImportDialog() {
+    setIsImportDialogOpen(true);
+    setIsImportDragActive(false);
+    setImportDialogQueuedFiles([]);
+  }
+
+  function closeImportDialog() {
+    if (isImporting) {
+      return;
+    }
+    setIsImportDialogOpen(false);
+    setIsImportDragActive(false);
+    setImportDialogQueuedFiles([]);
+  }
+
+  function triggerImportDialogFilePicker() {
+    importDialogFileInputRef.current?.click();
+  }
+
+  function splitSupportedImportFiles(rawFiles) {
+    const inputFiles = Array.isArray(rawFiles) ? rawFiles : Array.from(rawFiles ?? []);
+    const supportedFiles = [];
+    const rejectedNames = [];
+    for (const file of inputFiles) {
+      if (isSupportedImportFile(file)) {
+        supportedFiles.push(file);
+      } else {
+        rejectedNames.push(String(file?.name || 'unknown-file').trim() || 'unknown-file');
+      }
+    }
+    return { supportedFiles, rejectedNames };
+  }
+
+  function addFilesToImportQueue(rawFiles) {
+    const { supportedFiles, rejectedNames } = splitSupportedImportFiles(rawFiles);
+    if (supportedFiles.length === 0 && rejectedNames.length === 0) {
+      return;
+    }
+
+    if (supportedFiles.length > 0) {
+      setImportDialogQueuedFiles((prev) => {
+        const next = [...prev];
+        const seen = new Set(next.map((file) => importFileQueueKey(file)));
+        for (const file of supportedFiles) {
+          const key = importFileQueueKey(file);
+          if (!seen.has(key)) {
+            next.push(file);
+            seen.add(key);
+          }
+        }
+        return next;
+      });
+    }
+
+    if (rejectedNames.length > 0) {
+      setImportStatus(null);
+      setError(`Ignored unsupported file type${rejectedNames.length === 1 ? '' : 's'}: ${rejectedNames.join(', ')}`);
+    }
+  }
+
+  function onImportDialogFileInputChange(event) {
+    const files = event.target?.files ?? null;
+    if (event.target) {
+      event.target.value = '';
+    }
+    addFilesToImportQueue(files);
+  }
+
+  function onImportDialogDragOver(event) {
+    event.preventDefault();
+    setIsImportDragActive(true);
+  }
+
+  function onImportDialogDragLeave(event) {
+    event.preventDefault();
+    if (event.currentTarget === event.target) {
+      setIsImportDragActive(false);
+    }
+  }
+
+  function onImportDialogDrop(event) {
+    event.preventDefault();
+    setIsImportDragActive(false);
+    addFilesToImportQueue(event.dataTransfer?.files ?? null);
+  }
+
+  function removeImportQueuedFile(fileToRemove) {
+    const targetKey = importFileQueueKey(fileToRemove);
+    setImportDialogQueuedFiles((prev) => prev.filter((file) => importFileQueueKey(file) !== targetKey));
+  }
+
+  async function importSpreadsheetFilesBatch(filesInput) {
+    if (isImporting) {
+      return;
+    }
+    const filesToImport = Array.isArray(filesInput) ? filesInput : Array.from(filesInput ?? []);
+    if (filesToImport.length === 0) {
+      return;
+    }
+
+    setError('');
+    setImportStatus(null);
+    setIsImporting(true);
+
+    const importSuccesses = [];
+    const importFailures = [];
+
+    try {
+      for (const file of filesToImport) {
+        try {
+          const imported = await importSpreadsheetFrame(file);
+          importSuccesses.push(imported);
+        } catch (importError) {
+          importFailures.push({
+            fileName: String(file?.name || 'unknown-file').trim() || 'unknown-file',
+            message: importError instanceof Error ? importError.message : 'Import failed.',
+            details: Array.isArray(importError?.importErrorDetails)
+              ? importError.importErrorDetails
+                  .map((detail) => String(detail || '').trim())
+                  .filter(Boolean)
+              : [],
+          });
+        }
+      }
+
+      const importedFileCount = importSuccesses.length;
+      const totalFileCount = filesToImport.length;
+      const importedClassCount = importSuccesses.reduce((sum, entry) => sum + entry.parsedCourseCount, 0);
+      const importedSelectedCount = importSuccesses.reduce((sum, entry) => sum + entry.schedulableSelectedCount, 0);
+      const failureDetailLines = importFailures.flatMap((entry) => {
+        if (entry.details.length > 0) {
+          return entry.details.map((detail) => `${entry.fileName}: ${detail}`);
+        }
+        return [`${entry.fileName}: ${entry.message}`];
+      });
+
+      if (importFailures.length === 0) {
+        setImportStatus({
+          kind: 'success',
+          message: `Imported ${importedFileCount} file${importedFileCount === 1 ? '' : 's'} (${importedClassCount} class${importedClassCount === 1 ? '' : 'es'}). Auto-selected ${importedSelectedCount} schedulable class${importedSelectedCount === 1 ? '' : 'es'}.`,
+          details: [],
+        });
+        return;
+      }
+
+      if (importedFileCount > 0) {
+        const summary = `Import completed with errors. Imported ${importedFileCount} of ${totalFileCount} file${totalFileCount === 1 ? '' : 's'} (${importedClassCount} class${importedClassCount === 1 ? '' : 'es'}). Failed ${importFailures.length} file${importFailures.length === 1 ? '' : 's'}.`;
+        setImportStatus(null);
+        setError(buildImportFailureErrorMessage(summary, failureDetailLines));
+        return;
+      }
+
+      const allFailedMessage = `Import failed for ${totalFileCount} file${totalFileCount === 1 ? '' : 's'}.`;
+      setImportStatus(null);
+      setError(buildImportFailureErrorMessage(allFailedMessage, failureDetailLines));
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  function renderImportSampleLinks() {
+    return (
+      <p className="import-sample-links">
+        Samples:{' '}
+        <a href="/sample-import-schema-v1.csv" download>
+          CSV
+        </a>{' '}
+        |{' '}
+        <a href="/sample-import-schema-v1.xlsx" download>
+          XLSX
+        </a>
+      </p>
+    );
+  }
+
+  function dismissImportStatus() {
+    setImportStatus(null);
+  }
+
+  function renderImportStatusBar() {
+    if (!importStatus) {
+      return null;
+    }
+    const details = Array.isArray(importStatus.details) ? importStatus.details : [];
+    return (
+      <div
+        className={`import-status import-status-${importStatus.kind} import-status-box`}
+        role="status"
+        aria-live="polite"
+      >
+        <div className="import-status-head">
+          <p className="import-status-message">{importStatus.message}</p>
+          <button
+            type="button"
+            className="import-status-close"
+            aria-label="Dismiss import status"
+            onClick={dismissImportStatus}
+          >
+            X
+          </button>
+        </div>
+        {details.length > 0 ? (
+          <ul className="import-status-list">
+            {details.map((detailLine) => (
+              <li key={detailLine}>{detailLine}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    );
+  }
+
+  async function confirmImportSpreadsheetUpload() {
+    if (isImporting || importDialogQueuedFiles.length === 0) {
+      return;
+    }
+    const filesToImport = [...importDialogQueuedFiles];
+    setIsImportDialogOpen(false);
+    setIsImportDragActive(false);
+    setImportDialogQueuedFiles([]);
+    await importSpreadsheetFilesBatch(filesToImport);
+  }
+
+  function exportExtensionForFormat(format) {
+    return format === EXPORT_FORMAT_XLSX ? 'xlsx' : 'csv';
+  }
+
+  function exportMimeTypeForFormat(format) {
+    return format === EXPORT_FORMAT_XLSX
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : 'text/csv;charset=utf-8';
+  }
+
+  function normalizeExportFormat(format) {
+    return format === EXPORT_FORMAT_XLSX ? EXPORT_FORMAT_XLSX : EXPORT_FORMAT_CSV;
+  }
+
+  function downloadBytes(filename, bytes, mimeType) {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+    const blob = new Blob([bytes], { type: mimeType });
+    const objectUrl = window.URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(objectUrl);
+    }, 2500);
+  }
+
+  function sortedCoursesForExport(coursesToSort) {
+    return [...(coursesToSort ?? [])].sort((left, right) => {
+      return (
+        String(left.courseNumber || '').localeCompare(String(right.courseNumber || '')) ||
+        String(left.section || '').localeCompare(String(right.section || '')) ||
+        String(left.title || '').localeCompare(String(right.title || ''))
+      );
+    });
+  }
+
+  async function buildFrameExportArtifact(frame, frameCourses, options = {}) {
+    const format = normalizeExportFormat(options.format || exportFormat);
+    const scopeToken = sanitizeExportToken(options.scope || 'all', 'all');
+    const subjectToken = sanitizeExportToken(frame.subjectId || frame.subjectLabel || 'subject', 'subject');
+    const campusToken = sanitizeExportToken(frame.campusId || frame.campusLabel || 'campus', 'campus');
+    const termToken = sanitizeExportToken(frame.termId || termId || 'term', 'term');
+    const sourceToken = frame.sourceType === 'import' ? '-import' : '';
+    const extension = exportExtensionForFormat(format);
+    const filename = `gw-course-studio-${subjectToken}-${termToken}-${campusToken}${sourceToken}-${scopeToken}.${extension}`;
+    const serializedRows = sortedCoursesForExport(frameCourses).flatMap((course) =>
+      rowsForCourseExport(course, frame.subjectId)
+    );
+
+    const meta = {
+      schema_version: '1',
+      term_id: String(frame.termId || '').trim(),
+      campus_id: String(frame.campusId || '').trim(),
+      subject_id: normalizeSubjectIdValue(frame.subjectId),
+      subject_label: String(frame.subjectLabel || frame.subjectId || '').trim(),
+      campus_label: String(frame.campusLabel || '').trim(),
+      source_label: options.sourceLabel || `GW Course Studio export (${options.scopeLabel || 'All Rows'})`,
+      exported_at: new Date().toISOString(),
+      app_version: APP_VERSION,
+    };
+    const comments = [
+      frame.sourceType === 'import' ? `Source frame: ${String(frame.sourceLabel || 'Imported Spreadsheet').trim()}` : '',
+      options.comment || '',
+    ].filter(Boolean);
+
+    if (format === EXPORT_FORMAT_XLSX) {
+      const bytes = await serializeSpreadsheetXlsx({
+        meta,
+        comments,
+        rows: serializedRows,
+        sheetName: String(frame.subjectId || frame.subjectLabel || 'Schedule').slice(0, 31),
+      });
+      return { filename, bytes, mimeType: exportMimeTypeForFormat(format) };
+    }
+
+    const csvText = serializeSpreadsheetCsv({
+      meta,
+      comments,
+      rows: serializedRows,
+    });
+    return { filename, bytes: strToU8(csvText), mimeType: exportMimeTypeForFormat(format) };
+  }
+
+  function downloadExportArtifacts(artifacts, format, zipNameBase) {
+    const entries = Array.isArray(artifacts) ? artifacts.filter(Boolean) : [];
+    if (entries.length === 0) {
+      throw new Error('Nothing to export for the current selection.');
+    }
+    if (entries.length === 1) {
+      const artifact = entries[0];
+      downloadBytes(artifact.filename, artifact.bytes, artifact.mimeType);
+      return { mode: 'single', count: 1 };
+    }
+
+    const zipEntries = {};
+    for (const artifact of entries) {
+      zipEntries[artifact.filename] = artifact.bytes;
+    }
+    const zipBytes = zipSync(zipEntries, { level: 6 });
+    const zipName = `${sanitizeExportToken(zipNameBase || `gw-course-studio-${format}-export`, 'gw-course-studio-export')}.zip`;
+    downloadBytes(zipName, zipBytes, 'application/zip');
+    return { mode: 'zip', count: entries.length };
+  }
+
+  async function exportSelectedAcrossFrames(format) {
+    const normalizedFormat = normalizeExportFormat(format || exportFormat);
+    const selectedByFrame = new Map();
+    for (const course of selectedCourses) {
+      const frameKey = String(course.frameKey || '').trim();
+      const frame = frameByKey.get(frameKey);
+      if (!frame) {
+        continue;
+      }
+      const bucket = selectedByFrame.get(frameKey) ?? [];
+      bucket.push(course);
+      selectedByFrame.set(frameKey, bucket);
+    }
+
+    if (selectedByFrame.size === 0) {
+      throw new Error('Select at least one schedulable class before exporting.');
+    }
+
+    const artifacts = [];
+    for (const [frameKey, frameCourses] of selectedByFrame.entries()) {
+      const frame = frameByKey.get(frameKey);
+      if (!frame) {
+        continue;
+      }
+      artifacts.push(
+        await buildFrameExportArtifact(frame, frameCourses, {
+          format: normalizedFormat,
+          scope: 'selected',
+          scopeLabel: 'Selected Rows',
+          comment: `Exported ${frameCourses.length} selected schedulable class(es) from this frame.`,
+        })
+      );
+    }
+
+    return downloadExportArtifacts(
+      artifacts,
+      normalizedFormat,
+      `gw-course-studio-selected-${sanitizeExportToken(termId, 'term')}-${normalizedFormat}`
+    );
+  }
+
+  async function exportFrameRows(frame, options = {}) {
+    const normalizedFormat = normalizeExportFormat(options.format || exportFormat);
+    const selectedOnly = Boolean(options.selectedOnly);
+    const frameCourses = selectedOnly
+      ? frame.courses.filter((course) => selectedIds.has(course.id) && isSchedulableCourse(course))
+      : [...frame.courses];
+
+    if (frameCourses.length === 0) {
+      throw new Error(selectedOnly ? 'No selected schedulable rows in this frame to export.' : 'No rows in this frame to export.');
+    }
+
+    const artifact = await buildFrameExportArtifact(frame, frameCourses, {
+      format: normalizedFormat,
+      scope: selectedOnly ? 'selected' : 'all',
+      scopeLabel: selectedOnly ? 'Selected Rows' : 'All Rows',
+      comment: selectedOnly
+        ? `Exported selected schedulable classes from ${frame.subjectLabel}.`
+        : `Exported all rows from ${frame.subjectLabel}.`,
+    });
+    downloadExportArtifacts([artifact], normalizedFormat, artifact.filename);
+  }
+
+  async function runExportTask(taskRunner, successMessageBuilder) {
+    setError('');
+    setExportStatus(null);
+    setIsExporting(true);
+    try {
+      const result = await taskRunner();
+      const message = successMessageBuilder
+        ? successMessageBuilder(result)
+        : result?.mode === 'zip'
+          ? `Exported ${result.count} files as ZIP.`
+          : 'Export completed.';
+      setExportStatus({ kind: 'success', message });
+    } catch (exportError) {
+      const message = exportError instanceof Error ? exportError.message : 'Export failed.';
+      setExportStatus({ kind: 'error', message });
+      setError(message);
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   function clearBrowserLocalStorage() {
     if (typeof window !== 'undefined') {
       try {
@@ -2032,21 +3174,23 @@ function App() {
   }
 
   function buildSharePayload(options = {}) {
-    const { allowEmptySelection = false, includePreview = Boolean(isPdfPreviewOpen) } = options;
-    const frames = subjectFrames.map((frame) => ({
-      c: String(frame.campusId || '').trim(),
-      s: normalizeSubjectIdValue(frame.subjectId),
-      fk: String(frame.key || '').trim(),
-    }));
-    if (frames.length === 0) {
-      return { error: 'Load at least one subject before sharing.' };
-    }
+    const {
+      allowEmptySelection = false,
+      includePreview = Boolean(isPdfPreviewOpen),
+      includeAllFrames = false,
+    } = options;
 
     const selectedEntries = [];
     const selectedEntryKeys = new Set();
-    for (const course of selectedCourses) {
-      const frameKey = String(course.frameKey || '').trim();
-      if (!frameKey) {
+    for (const course of selectedCourses.filter((entry) => !isImportedCourse(entry))) {
+      const frameKey = [
+        String(course.frameTermId || '').trim(),
+        String(course.frameCampusId || '').trim(),
+        normalizeSubjectIdValue(course.frameSubjectId),
+      ]
+        .filter(Boolean)
+        .join('|');
+      if (!frameKey || frameKey.split('|').length !== 3) {
         continue;
       }
       const crns = normalizedCrnListForCourse(course);
@@ -2061,20 +3205,68 @@ function App() {
       selectedEntries.push({ fk: frameKey, cr: crns });
     }
 
-    if (!allowEmptySelection && selectedEntries.length === 0) {
+    const importedSelectedCrns = [
+      ...new Set(
+        selectedCourses
+          .filter((course) => isImportedCourse(course))
+          .flatMap((course) => normalizedCrnListForCourse(course))
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+      ),
+    ].sort();
+
+    if (!allowEmptySelection && selectedEntries.length === 0 && importedSelectedCrns.length === 0) {
       return { error: 'Select at least one schedulable class before sharing.' };
     }
     const selectedCrns = [...new Set(selectedEntries.flatMap((entry) => entry.cr))].sort();
-    if (!allowEmptySelection && selectedCrns.length === 0) {
+    if (!allowEmptySelection && selectedCrns.length === 0 && importedSelectedCrns.length === 0) {
       return { error: 'Select at least one schedulable class before sharing.' };
+    }
+
+    const frameKeyByCourse = new Set(
+      selectedCourses
+        .filter((course) => !isImportedCourse(course))
+        .map((course) =>
+          [
+            String(course.frameTermId || '').trim(),
+            String(course.frameCampusId || '').trim(),
+            normalizeSubjectIdValue(course.frameSubjectId),
+          ]
+            .filter(Boolean)
+            .join('|')
+        )
+        .filter((frameKey) => frameKey && frameKey.split('|').length === 3)
+    );
+
+    const frameTokens = includeAllFrames
+      ? subjectFrames
+          .filter((frame) => String(frame.sourceType || '').trim().toLowerCase() !== 'import')
+          .map((frame) => ({
+            c: String(frame.campusId || '').trim(),
+            s: normalizeSubjectIdValue(frame.subjectId),
+            fk: `${String(frame.termId || '').trim()}|${String(frame.campusId || '').trim()}|${normalizeSubjectIdValue(frame.subjectId)}`,
+          }))
+          .filter((frame) => frame.c && frame.s && frame.fk.split('|').length === 3)
+      : [...frameKeyByCourse].map((frameKey) => {
+          const [, campusPart, subjectPart] = frameKey.split('|');
+          return {
+            c: String(campusPart || '').trim(),
+            s: normalizeSubjectIdValue(subjectPart),
+            fk: frameKey,
+          };
+        });
+
+    if (frameTokens.length === 0 && importedSelectedCrns.length === 0) {
+      return { error: 'Load at least one subject before sharing.' };
     }
 
     return {
       payload: {
         v: SHARE_STATE_VERSION,
         t: String(termId || '').trim(),
-        f: frames.map((frame) => ({ c: frame.c, s: frame.s })),
+        f: frameTokens.map((frame) => ({ c: frame.c, s: frame.s })),
         sc: selectedCrns,
+        isc: importedSelectedCrns,
         ui: {
           onlySel: Boolean(showOnlySelected),
           showCancel: Boolean(showCancelledCourses),
@@ -2130,7 +3322,7 @@ function App() {
       return;
     }
 
-    const built = buildSharePayload({ allowEmptySelection: true });
+    const built = buildSharePayload({ allowEmptySelection: true, includeAllFrames: true });
     if (built.error || !built.payload) {
       setShareStatus({ kind: 'error', message: built.error || 'Could not save state.' });
       return;
@@ -2486,29 +3678,43 @@ function App() {
       }
     }
 
-    if (loadedFrameKeys.size === 0) {
-      isShareRestoreInFlightRef.current = false;
-      setError('Share link could not load any subjects.');
-      setLoading(false);
-      return;
-    }
-
     const selectionEntries = Array.isArray(payload.sel)
       ? payload.sel.filter((entry) => loadedFrameKeys.has(entry.fk))
       : [];
     const selectedCrns = Array.isArray(payload.sc)
       ? [...new Set(payload.sc.map((value) => String(value || '').trim()).filter(Boolean))]
       : [];
+    const importedSelectedCrns = Array.isArray(payload.isc)
+      ? [...new Set(payload.isc.map((value) => String(value || '').trim()).filter(Boolean))]
+      : [];
+
+    if (loadedFrameKeys.size === 0) {
+      const hasImportedOnlySelection =
+        payload.f.length === 0 &&
+        selectedCrns.length === 0 &&
+        selectionEntries.length === 0 &&
+        importedSelectedCrns.length > 0;
+      if (!hasImportedOnlySelection) {
+        isShareRestoreInFlightRef.current = false;
+        setError('Share link could not load any subjects.');
+        setLoading(false);
+        return;
+      }
+    }
+
     setPendingShareRestoreSelection({
       expectedFrameKeys: [...loadedFrameKeys],
       entries: selectionEntries,
       crns: selectedCrns,
+      importedCrns: importedSelectedCrns,
     });
 
     if (failedFrames.length > 0) {
       setError(
         `Share link loaded with warnings: ${failedFrames.length} subject frame(s) failed to load. ${failedFrames.join(' | ')}`
       );
+    } else if (loadedFrameKeys.size === 0 && importedSelectedCrns.length > 0) {
+      setError('Share link includes imported class selections. Re-import spreadsheet classes to restore them.');
     }
 
     setLoading(false);
@@ -2552,7 +3758,13 @@ function App() {
         .map((value) => String(value || '').trim())
         .filter(Boolean)
     );
+    const selectedImportedCrnSet = new Set(
+      (pendingShareRestoreSelection.importedCrns ?? [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    );
     const matchedCrnSet = new Set();
+    const matchedImportedCrnSet = new Set();
 
     for (const entry of pendingShareRestoreSelection.entries) {
       const targetKey = normalizedCrnListKey(entry.cr);
@@ -2574,6 +3786,9 @@ function App() {
         if (!isSchedulableCourse(course)) {
           continue;
         }
+        if (isImportedCourse(course)) {
+          continue;
+        }
         const courseCrns = normalizedCrnListForCourse(course);
         const hasSelectedCrn = courseCrns.some((crn) => selectedCrnSet.has(crn));
         if (!hasSelectedCrn) {
@@ -2588,13 +3803,35 @@ function App() {
       }
     }
 
+    if (selectedImportedCrnSet.size > 0) {
+      for (const course of courses) {
+        if (!isSchedulableCourse(course) || !isImportedCourse(course)) {
+          continue;
+        }
+        const courseCrns = normalizedCrnListForCourse(course);
+        const hasSelectedCrn = courseCrns.some((crn) => selectedImportedCrnSet.has(crn));
+        if (!hasSelectedCrn) {
+          continue;
+        }
+        selectedFromShare.add(course.id);
+        for (const crn of courseCrns) {
+          if (selectedImportedCrnSet.has(crn)) {
+            matchedImportedCrnSet.add(crn);
+          }
+        }
+      }
+    }
+
     setSelectedIds(selectedFromShare);
     setPendingShareRestoreSelection(null);
 
     const unmatchedCrnCount = [...selectedCrnSet].filter((crn) => !matchedCrnSet.has(crn)).length;
-    const unmatchedCount = unmatchedEntries.length + unmatchedCrnCount;
+    const unmatchedImportedCrnCount = [...selectedImportedCrnSet].filter(
+      (crn) => !matchedImportedCrnSet.has(crn)
+    ).length;
+    const unmatchedCount = unmatchedEntries.length + unmatchedCrnCount + unmatchedImportedCrnCount;
     if (unmatchedCount > 0) {
-      const warning = `Share link loaded, but ${unmatchedCount} selected class selection(s) could not be matched in current schedule data.`;
+      const warning = `Share link loaded, but ${unmatchedCount} selected class selection(s) could not be matched in current schedule data.${unmatchedImportedCrnCount > 0 ? ' Re-import spreadsheet classes to restore imported selections.' : ''}`;
       setError((previous) => (previous ? `${previous} ${warning}` : warning));
     }
     if (pendingShareRestorePreview) {
@@ -3155,6 +4392,7 @@ function App() {
             />
             <span className="course-code">{course.courseNumber}</span>
             {course.section ? <span className="course-section">Sec {course.section}</span> : null}
+            {course.sourceType === 'import' ? <span className="course-source-badge">Imported</span> : null}
             {activeWarningCount > 0 ? (
               <button
                 type="button"
@@ -3415,7 +4653,35 @@ function App() {
 
       {error ? (
         <div className="error-box">
-          <p>{error}</p>
+          <div className="error-box-header">
+            <div className="error-box-message">
+              {parsedErrorDisplay.summary ? <p>{parsedErrorDisplay.summary}</p> : null}
+              {parsedErrorDisplay.bullets.length > 0 ? (
+                <ul className="error-bullet-list">
+                  {parsedErrorDisplay.bullets.map((entry) => (
+                    <li key={`${entry.text}|${entry.recommendedFix}`}>
+                      <span>{entry.text}</span>
+                      {entry.recommendedFix ? (
+                        <ul className="error-fix-list">
+                          <li>
+                            <em>Recommended fix: {entry.recommendedFix}</em>
+                          </li>
+                        </ul>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="error-dismiss-button"
+              onClick={() => setError('')}
+              aria-label="Dismiss error message"
+            >
+              X
+            </button>
+          </div>
           {storageRecoveryNeeded ? (
             <>
               <p className="error-recovery-hint">{recoveryReloadHint}</p>
@@ -3432,12 +4698,113 @@ function App() {
         </div>
       ) : null}
 
+      {isGlobalImportDragActive ? (
+        <div className="global-import-drop-overlay" role="presentation" aria-hidden="true">
+          <div className="global-import-drop-message">
+            <strong>Drop to Import</strong>
+            <p>Drop CSV/XLSX files anywhere to start import.</p>
+          </div>
+        </div>
+      ) : null}
+
+      {subjectFrames.length === 0 ? (
+        <section className="tools-panel tools-panel-empty" aria-label="Tools">
+          <div className="tools-panel-strip">
+            <h2>Tools</h2>
+            <div className="tools-strip-groups">
+              <div className="tools-group tools-group-import" aria-label="Import controls">
+                <div className="tools-group-top">
+                  <span className="import-controls-title">Import CSV/XLSX</span>
+                  <button
+                    type="button"
+                    className="view-toggle-button import-trigger-button"
+                    onClick={openImportDialog}
+                    disabled={loading || isImporting}
+                    aria-label="Import a spreadsheet file"
+                  >
+                    {isImporting ? 'Importing...' : 'Import'}
+                  </button>
+                </div>
+                <p className="import-note">Import a spreadsheet to create a course frame and auto-select classes.</p>
+                {renderImportSampleLinks()}
+                {renderImportStatusBar()}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       {subjectFrames.length > 0 ? (
         <main className="workspace">
           <section className="tools-panel" aria-label="Tools">
             <div className="tools-panel-strip">
               <h2>Tools</h2>
               <div className="tools-strip-groups">
+                <div className="tools-group tools-group-import" aria-label="Import controls">
+                  <div className="tools-group-top">
+                    <span className="import-controls-title">Import CSV/XLSX</span>
+                    <button
+                      type="button"
+                      className="view-toggle-button import-trigger-button"
+                      onClick={openImportDialog}
+                      disabled={loading || isImporting}
+                      aria-label="Import a spreadsheet file"
+                    >
+                      {isImporting ? 'Importing...' : 'Import'}
+                    </button>
+                  </div>
+                  <p className="import-note">Adds a new imported frame and auto-selects schedulable classes.</p>
+                  {renderImportSampleLinks()}
+                  {renderImportStatusBar()}
+                </div>
+
+                <div className="tools-group tools-group-export" aria-label="Export controls">
+                  <div className="tools-group-top">
+                    <span className="export-controls-title">Export</span>
+                    <button
+                      type="button"
+                      className="view-toggle-button export-trigger-button"
+                      onClick={() =>
+                        runExportTask(
+                          () => exportSelectedAcrossFrames(exportFormat),
+                          (result) =>
+                            result?.mode === 'zip'
+                              ? `Exported selected classes in ${result.count} files (ZIP, ${exportFormatLabel}).`
+                              : `Exported selected classes (${exportFormatLabel}).`
+                        )
+                      }
+                      disabled={!canExportSelected || isExporting}
+                      aria-label="Export selected classes"
+                    >
+                      {isExporting ? 'Exporting...' : 'Export Selected'}
+                    </button>
+                  </div>
+                  <div className="export-format-row" role="radiogroup" aria-label="Export format">
+                    <label className="export-format-toggle">
+                      <input
+                        type="radio"
+                        name="export-format-main"
+                        checked={exportFormat === EXPORT_FORMAT_CSV}
+                        onChange={() => setExportFormat(EXPORT_FORMAT_CSV)}
+                      />
+                      CSV
+                    </label>
+                    <label className="export-format-toggle">
+                      <input
+                        type="radio"
+                        name="export-format-main"
+                        checked={exportFormat === EXPORT_FORMAT_XLSX}
+                        onChange={() => setExportFormat(EXPORT_FORMAT_XLSX)}
+                      />
+                      XLSX
+                    </label>
+                  </div>
+                  <p className="export-note">Exports selected classes by frame; multi-frame exports download as ZIP.</p>
+                  {exportStatus ? (
+                    <p className={`export-status export-status-${exportStatus.kind}`}>{exportStatus.message}</p>
+                  ) : null}
+                </div>
+
                 <div className="tools-group tools-group-share" aria-label="Share controls">
                   <div className="tools-group-top">
                     <span className="share-controls-title">Share Link</span>
@@ -3728,6 +5095,22 @@ function App() {
                     <button
                       type="button"
                       className="course-info-link"
+                      onClick={() =>
+                        runExportTask(
+                          () => exportSelectedAcrossFrames(exportFormat),
+                          (result) =>
+                            result?.mode === 'zip'
+                              ? `Exported selected classes in ${result.count} files (ZIP, ${exportFormatLabel}).`
+                              : `Exported selected classes (${exportFormatLabel}).`
+                        )
+                      }
+                      disabled={selectedFrameRows.length === 0 || isExporting}
+                    >
+                      Export Selected
+                    </button>
+                    <button
+                      type="button"
+                      className="course-info-link"
                       onClick={clearSelection}
                       disabled={selectedFrameRows.length === 0}
                     >
@@ -3769,6 +5152,7 @@ function App() {
                   <div className="subject-frame-header">
                     <div className="subject-frame-title-wrap">
                       <h3>{frame.subjectLabel}</h3>
+                      {frame.sourceType === 'import' ? <span className="frame-source-badge">Imported</span> : null}
                       <button
                         type="button"
                         className={`frame-state-indicator ${frame.collapsed ? 'is-collapsed' : 'is-expanded'}`}
@@ -3800,6 +5184,32 @@ function App() {
                       <button
                         type="button"
                         className="course-info-link"
+                        onClick={() =>
+                          runExportTask(
+                            () => exportFrameRows(frame, { selectedOnly: false, format: exportFormat }),
+                            () => `Exported ${frame.subjectLabel} all rows (${exportFormatLabel}).`
+                          )
+                        }
+                        disabled={frame.courses.length === 0 || isExporting}
+                      >
+                        Export All
+                      </button>
+                      <button
+                        type="button"
+                        className="course-info-link"
+                        onClick={() =>
+                          runExportTask(
+                            () => exportFrameRows(frame, { selectedOnly: true, format: exportFormat }),
+                            () => `Exported ${frame.subjectLabel} selected rows (${exportFormatLabel}).`
+                          )
+                        }
+                        disabled={frameTotalSelectedCount === 0 || isExporting}
+                      >
+                        Export Selected
+                      </button>
+                      <button
+                        type="button"
+                        className="course-info-link"
                         onClick={() => removeSubjectFrame(frame.key)}
                       >
                         Remove Subject
@@ -3809,6 +5219,11 @@ function App() {
                   <p className="subject-frame-meta">
                     {frame.subjectLabel} | {frame.termLabel} | {frame.campusLabel}
                   </p>
+                  {frame.sourceType === 'import' ? (
+                    <p className="subject-frame-meta subject-frame-meta-source">
+                      Source: {frame.sourceLabel || 'Imported Spreadsheet'}
+                    </p>
+                  ) : null}
                   {!frame.collapsed ? (
                     <>
                       <p className="subject-frame-meta">
@@ -3863,12 +5278,12 @@ function App() {
             </div>
 
             <div className="calendar-shell">
-              <div className="time-column" style={{ height: bodyHeight }}>
+              <div className="time-column" style={{ height: bodyHeight + dayHeaderHeightPx }}>
                 {hourTicks.map((tick) => (
                   <div
                     key={`time-${tick}`}
                     className="time-label"
-                    style={{ top: (tick - calendar.startMin) * pxPerMin }}
+                    style={{ top: dayHeaderHeightPx + (tick - calendar.startMin) * pxPerMin }}
                   >
                     {minuteLabel(tick)}
                   </div>
@@ -4077,6 +5492,12 @@ function App() {
                         <p>
                           <strong>Campus:</strong> {courseCampusLabel(course) || 'N/A'}
                         </p>
+                        {course.sourceType === 'import' ? (
+                          <p>
+                            <strong>Source:</strong> {course.sourceLabel || 'Imported Spreadsheet'}
+                            {course.externalSource ? ` | ${course.externalSource}` : ''}
+                          </p>
+                        ) : null}
                         {new Set(instructorEntries.map((entry) => entry.instructor)).size > 1 ? (
                           <div>
                             <strong>Cross-listed Instructors</strong>
@@ -4164,6 +5585,100 @@ function App() {
             </section>
           ) : null}
         </section>
+      ) : null}
+
+      {isImportDialogOpen ? (
+        <div className="import-dialog-overlay" role="presentation" onClick={closeImportDialog}>
+          <aside
+            className="import-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Import spreadsheet files"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="import-dialog-header">
+              <h3>Import CSV/XLSX</h3>
+              <button
+                type="button"
+                className="detail-close-button"
+                aria-label="Close import dialog"
+                onClick={closeImportDialog}
+                disabled={isImporting}
+              >
+                X
+              </button>
+            </div>
+            <p className="import-dialog-subtitle">
+              Choose files or drag and drop them below, then confirm to import them together.
+            </p>
+            <div className="import-dialog-actions-row">
+              <button
+                type="button"
+                className="view-toggle-button import-trigger-button import-dialog-choose-button"
+                onClick={triggerImportDialogFilePicker}
+                disabled={isImporting}
+              >
+                Choose Files
+              </button>
+              <button
+                type="button"
+                className="view-toggle-button import-dialog-clear-button"
+                onClick={() => setImportDialogQueuedFiles([])}
+                disabled={isImporting || importDialogQueuedFiles.length === 0}
+              >
+                Clear List
+              </button>
+              <button
+                type="button"
+                className="view-toggle-button import-dialog-confirm-button"
+                onClick={confirmImportSpreadsheetUpload}
+                disabled={isImporting || importDialogQueuedFiles.length === 0}
+              >
+                {isImporting ? 'Importing...' : `Confirm Upload${importDialogQueuedFiles.length ? ` (${importDialogQueuedFiles.length})` : ''}`}
+              </button>
+            </div>
+            <input
+              ref={importDialogFileInputRef}
+              className="import-file-input"
+              type="file"
+              multiple
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={onImportDialogFileInputChange}
+            />
+            <div
+              className={`import-dropzone ${isImportDragActive ? 'import-dropzone-active' : ''}`}
+              onDragOver={onImportDialogDragOver}
+              onDragEnter={onImportDialogDragOver}
+              onDragLeave={onImportDialogDragLeave}
+              onDrop={onImportDialogDrop}
+            >
+              <p>Drag and drop one or more CSV/XLSX files here.</p>
+              <p>Supported extensions: .csv, .xlsx</p>
+            </div>
+            {importDialogQueuedFiles.length > 0 ? (
+              <ul className="import-file-queue-list">
+                {importDialogQueuedFiles.map((file) => (
+                  <li key={importFileQueueKey(file)} className="import-file-queue-item">
+                    <span className="import-file-queue-name">{file.name}</span>
+                    <button
+                      type="button"
+                      className="import-file-queue-remove"
+                      onClick={() => removeImportQueuedFile(file)}
+                      disabled={isImporting}
+                      aria-label={`Remove ${file.name} from import list`}
+                    >
+                      X
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="import-dialog-empty">No files selected.</p>
+            )}
+            {renderImportSampleLinks()}
+            {renderImportStatusBar()}
+          </aside>
+        </div>
       ) : null}
 
       {isSearchSyntaxOpen ? (
@@ -4369,6 +5884,12 @@ function App() {
             <p className="detail-meta">
               <strong>Campus:</strong> {activeCourseCampusLabel || 'N/A'}
             </p>
+            {activeCourse.sourceType === 'import' ? (
+              <p className="detail-meta">
+                <strong>Source:</strong> {activeCourse.sourceLabel || 'Imported Spreadsheet'}
+                {activeCourse.externalSource ? ` | ${activeCourse.externalSource}` : ''}
+              </p>
+            ) : null}
             {new Set(instructorEntriesForCourse(activeCourse).map((entry) => entry.instructor)).size > 1 ? (
               <div className="detail-notes">
                 <strong>Cross-listed Instructors</strong>

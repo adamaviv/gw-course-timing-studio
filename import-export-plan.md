@@ -89,6 +89,10 @@ This version adds feasibility safeguards for the current app:
 - Add:
   - `Download Blank CSV Template`
   - `Download Blank XLSX Template`
+- Add:
+  - `Download Sample CSV`
+  - `Download Sample XLSX`
+  - link both samples directly from the in-app docs/tools area so end users can edit and re-import.
 - Prefill template metadata from current term/campus/subject controls.
 - Exit criteria: first-time user can import a valid file using only in-app docs/template.
 
@@ -116,6 +120,8 @@ This version adds feasibility safeguards for the current app:
 - `#meta,term_id,<value>`
 - `#meta,campus_id,<value>`
 - `#meta,subject_id,<value>`
+- Optional comment lines for operational notes:
+  - `#comment,<free text note>`
 - Optional:
   - `subject_label`
   - `campus_label`
@@ -138,6 +144,7 @@ This version adds feasibility safeguards for the current app:
 - `relation_type`
 - `linked_parent_crn`
 - `crosslist_group`
+- `crosslist_crns` (CRN list; supports `|` or `,` delimiters)
 - `comment`
 - `action_required`
 - `action_status`
@@ -147,10 +154,16 @@ This version adds feasibility safeguards for the current app:
 
 ### Relation Rules
 - `relation_type`: `primary | linked | cross-listed` (default `primary`)
+- linked rows require an explicit `crn` (do not leave linked CRNs blank)
 - `linked` rows require valid `linked_parent_crn` after normalization.
 - `cross-listed` rows require `crosslist_group`.
+- `cross-listed` rows require `crosslist_crns` and should include the row CRN plus one or more linked CRNs.
 - Non-cancelled rows require valid `meeting_pattern`.
 - Cancelled rows may omit `meeting_pattern`.
+
+### Section Number Rules
+- Undergraduate courses (`1000-4999`) should use section numbers in the `10-79` range.
+- Graduate courses (`6000+`) should use section numbers starting at `80`.
 
 ### Missing CRN Policy
 - Generate deterministic numeric pseudo-CRN when CRN is blank.

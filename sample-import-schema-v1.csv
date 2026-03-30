@@ -1,0 +1,17 @@
+#meta,schema_version,1
+#meta,term_id,202603
+#meta,campus_id,1
+#meta,subject_id,CSCI
+#meta,subject_label,Computer Science
+#meta,campus_label,Main Campus
+#meta,source_label,Sample Import File
+#meta,exported_at,2026-03-26T19:05:44.729Z
+#meta,app_version,v0.4
+#comment,Sample dataset for Phase 1 schema review.
+#comment,Linked rows include explicit CRN; cross-listed rows include crosslist_crns lists.
+class_uid,crn,course_number,section,title,status,credits,instructor,room,date_range,meeting_pattern,relation_type,linked_parent_crn,crosslist_group,crosslist_crns,comment,action_required,action_status,action_taken_at,action_note,external_source
+sample-uid-1,54172,CSCI 1012,10,Introduction to Programming with Python,OPEN,3.00,"Taylor, J",ROME 195,08/24/26 - 12/08/26,M 3:45 PM-5:00 PM,primary,,,,Sample primary lecture row.,none,n/a,,,false
+sample-uid-2,54320,CSCI 1012,30,Introduction to Programming with Python (lab),OPEN,0.00,"Goldfrank, J",ROME 196,08/24/26 - 12/08/26,W 3:45 PM-5:00 PM,linked,54172,,,Linked lab row with explicit CRN.,review,pending,,Verify lab capacity.,true
+sample-uid-3,46510,CSCI 4366,10,Advanced Topics in Computer Science: Applied ML,OPEN,3.00,"Aviv, A",SEH 101,08/24/26 - 12/08/26,TR 2:00 PM-3:15 PM,cross-listed,,grp-4366-6366-a,46510|46517,Cross-listed undergraduate listing.,none,n/a,,,false
+sample-uid-4,46517,CSCI 6366,80,Applied Machine Learning Systems,OPEN,3.00,"Aviv, A",SEH 101,08/24/26 - 12/08/26,TR 2:00 PM-3:15 PM,cross-listed,,grp-4366-6366-a,46510|46517,Cross-listed graduate listing in same group.,none,n/a,,,false
+sample-uid-5,59999,CSCI 4999,20,Special Topics (Cancelled Example),CANCELLED,3.00,TBA,N/A,08/24/26 - 12/08/26,,primary,,,,Cancelled rows may omit meeting pattern.,drop,not-started,,Review replacement options.,false
