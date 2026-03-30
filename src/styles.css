@@ -362,6 +362,38 @@ button:disabled {
   background: #22303a;
 }
 
+.global-import-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: #0e35291f;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.global-import-drop-message {
+  border: 2px dashed #2f7d44;
+  border-radius: 16px;
+  background: #f3fff7;
+  color: #205138;
+  padding: 1rem 1.1rem;
+  min-width: min(440px, calc(100vw - 2rem));
+  text-align: center;
+  box-shadow: 0 14px 26px #1238282d;
+}
+
+.global-import-drop-message strong {
+  font-size: 1rem;
+}
+
+.global-import-drop-message p {
+  margin: 0.28rem 0 0;
+  font-size: 0.86rem;
+  color: #2b5f42;
+}
+
 .workspace {
   display: grid;
   gap: 1rem;
@@ -2173,6 +2205,7 @@ body.print-prep .course-detail-overlay,
 body.print-prep .warning-detail-overlay,
 body.print-prep .search-syntax-overlay,
 body.print-prep .import-dialog-overlay,
+body.print-prep .global-import-drop-overlay,
 body.print-prep .share-toast,
 body.print-prep .app-version-badge {
   display: none !important;
@@ -2588,6 +2621,7 @@ body.print-prep .print-detail-card:last-child {
   .warning-detail-overlay,
   .search-syntax-overlay,
   .import-dialog-overlay,
+  .global-import-drop-overlay,
   .app-version-badge {
     display: none !important;
   }

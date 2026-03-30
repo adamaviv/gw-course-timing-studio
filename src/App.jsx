@@ -306,7 +306,7 @@ function normalizeSpreadsheetMetaForImport(meta) {
 function isCsvImportFile(file) {
   const fileName = String(file?.name || '').trim().toLowerCase();
   const mimeType = String(file?.type || '').trim().toLowerCase();
-  return fileName.endsWith('.csv') || mimeType.includes('text/csv') || mimeType === 'text/plain';
+  return fileName.endsWith('.csv') || fileName.endsWith('.csvf') || mimeType.includes('text/csv') || mimeType === 'text/plain';
 }
 
 function isXlsxImportFile(file) {
@@ -314,6 +314,7 @@ function isXlsxImportFile(file) {
   const mimeType = String(file?.type || '').trim().toLowerCase();
   return (
     fileName.endsWith('.xlsx') ||
+    fileName.endsWith('.xlxs') ||
     mimeType.includes('spreadsheetml.sheet') ||
     mimeType.includes('application/vnd.ms-excel')
   );
@@ -1558,6 +1559,7 @@ function App() {
   const [isImporting, setIsImporting] = useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const [isImportDragActive, setIsImportDragActive] = useState(false);
+  const [isGlobalImportDragActive, setIsGlobalImportDragActive] = useState(false);
   const [importDialogQueuedFiles, setImportDialogQueuedFiles] = useState([]);
   const [importStatus, setImportStatus] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -1566,6 +1568,7 @@ function App() {
   const [shareStatus, setShareStatus] = useState(null);
   const [pendingShareRestoreSelection, setPendingShareRestoreSelection] = useState(null);
   const [pendingShareRestorePreview, setPendingShareRestorePreview] = useState(false);
+  const globalFileDragDepthRef = useRef(0);
   const hasProcessedShareLinkRef = useRef(false);
   const isShareRestoreInFlightRef = useRef(false);
   const previewManagedByHistoryRef = useRef(false);
@@ -1767,6 +1770,80 @@ function App() {
     }
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);
+  }, [isImportDialogOpen, isImporting]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    function hasFiles(event) {
+      const types = event?.dataTransfer?.types;
+      return Boolean(types && typeof types.includes === 'function' && types.includes('Files'));
+    }
+
+    function onDragEnter(event) {
+      if (!hasFiles(event) || isImportDialogOpen) {
+        return;
+      }
+      event.preventDefault();
+      globalFileDragDepthRef.current += 1;
+      setIsGlobalImportDragActive(true);
+    }
+
+    function onDragOver(event) {
+      if (!hasFiles(event) || isImportDialogOpen) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+      setIsGlobalImportDragActive(true);
+    }
+
+    function onDragLeave(event) {
+      if (!hasFiles(event) || isImportDialogOpen) {
+        return;
+      }
+      event.preventDefault();
+      globalFileDragDepthRef.current = Math.max(0, globalFileDragDepthRef.current - 1);
+      if (globalFileDragDepthRef.current === 0) {
+        setIsGlobalImportDragActive(false);
+      }
+    }
+
+    function onDrop(event) {
+      if (!hasFiles(event)) {
+        return;
+      }
+      event.preventDefault();
+      globalFileDragDepthRef.current = 0;
+      setIsGlobalImportDragActive(false);
+      if (isImportDialogOpen || isImporting) {
+        return;
+      }
+      const { supportedFiles, rejectedNames } = splitSupportedImportFiles(event.dataTransfer?.files ?? null);
+      if (rejectedNames.length > 0) {
+        setImportStatus(null);
+        setError(`Ignored unsupported file type${rejectedNames.length === 1 ? '' : 's'}: ${rejectedNames.join(', ')}`);
+      }
+      if (supportedFiles.length > 0) {
+        void importSpreadsheetFilesBatch(supportedFiles);
+      }
+    }
+
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
   }, [isImportDialogOpen, isImporting]);
 
   useEffect(() => {
@@ -2641,12 +2718,8 @@ function App() {
     importDialogFileInputRef.current?.click();
   }
 
-  function addFilesToImportQueue(rawFiles) {
+  function splitSupportedImportFiles(rawFiles) {
     const inputFiles = Array.isArray(rawFiles) ? rawFiles : Array.from(rawFiles ?? []);
-    if (inputFiles.length === 0) {
-      return;
-    }
-
     const supportedFiles = [];
     const rejectedNames = [];
     for (const file of inputFiles) {
@@ -2655,6 +2728,14 @@ function App() {
       } else {
         rejectedNames.push(String(file?.name || 'unknown-file').trim() || 'unknown-file');
       }
+    }
+    return { supportedFiles, rejectedNames };
+  }
+
+  function addFilesToImportQueue(rawFiles) {
+    const { supportedFiles, rejectedNames } = splitSupportedImportFiles(rawFiles);
+    if (supportedFiles.length === 0 && rejectedNames.length === 0) {
+      return;
     }
 
     if (supportedFiles.length > 0) {
@@ -2707,6 +2788,75 @@ function App() {
   function removeImportQueuedFile(fileToRemove) {
     const targetKey = importFileQueueKey(fileToRemove);
     setImportDialogQueuedFiles((prev) => prev.filter((file) => importFileQueueKey(file) !== targetKey));
+  }
+
+  async function importSpreadsheetFilesBatch(filesInput) {
+    if (isImporting) {
+      return;
+    }
+    const filesToImport = Array.isArray(filesInput) ? filesInput : Array.from(filesInput ?? []);
+    if (filesToImport.length === 0) {
+      return;
+    }
+
+    setError('');
+    setImportStatus(null);
+    setIsImporting(true);
+
+    const importSuccesses = [];
+    const importFailures = [];
+
+    try {
+      for (const file of filesToImport) {
+        try {
+          const imported = await importSpreadsheetFrame(file);
+          importSuccesses.push(imported);
+        } catch (importError) {
+          importFailures.push({
+            fileName: String(file?.name || 'unknown-file').trim() || 'unknown-file',
+            message: importError instanceof Error ? importError.message : 'Import failed.',
+            details: Array.isArray(importError?.importErrorDetails)
+              ? importError.importErrorDetails
+                  .map((detail) => String(detail || '').trim())
+                  .filter(Boolean)
+              : [],
+          });
+        }
+      }
+
+      const importedFileCount = importSuccesses.length;
+      const totalFileCount = filesToImport.length;
+      const importedClassCount = importSuccesses.reduce((sum, entry) => sum + entry.parsedCourseCount, 0);
+      const importedSelectedCount = importSuccesses.reduce((sum, entry) => sum + entry.schedulableSelectedCount, 0);
+      const failureDetailLines = importFailures.flatMap((entry) => {
+        if (entry.details.length > 0) {
+          return entry.details.map((detail) => `${entry.fileName}: ${detail}`);
+        }
+        return [`${entry.fileName}: ${entry.message}`];
+      });
+
+      if (importFailures.length === 0) {
+        setImportStatus({
+          kind: 'success',
+          message: `Imported ${importedFileCount} file${importedFileCount === 1 ? '' : 's'} (${importedClassCount} class${importedClassCount === 1 ? '' : 'es'}). Auto-selected ${importedSelectedCount} schedulable class${importedSelectedCount === 1 ? '' : 'es'}.`,
+          details: [],
+        });
+        return;
+      }
+
+      if (importedFileCount > 0) {
+        const summary = `Import completed with errors. Imported ${importedFileCount} of ${totalFileCount} file${totalFileCount === 1 ? '' : 's'} (${importedClassCount} class${importedClassCount === 1 ? '' : 'es'}). Failed ${importFailures.length} file${importFailures.length === 1 ? '' : 's'}.`;
+        setImportStatus(null);
+        setError(buildImportFailureErrorMessage(summary, failureDetailLines));
+        return;
+      }
+
+      const allFailedMessage = `Import failed for ${totalFileCount} file${totalFileCount === 1 ? '' : 's'}.`;
+      setImportStatus(null);
+      setError(buildImportFailureErrorMessage(allFailedMessage, failureDetailLines));
+    } finally {
+      setIsImporting(false);
+    }
   }
 
   function renderImportSampleLinks() {
@@ -2769,65 +2919,7 @@ function App() {
     setIsImportDialogOpen(false);
     setIsImportDragActive(false);
     setImportDialogQueuedFiles([]);
-
-    setError('');
-    setImportStatus(null);
-    setIsImporting(true);
-
-    const importSuccesses = [];
-    const importFailures = [];
-
-    try {
-      for (const file of filesToImport) {
-        try {
-          const imported = await importSpreadsheetFrame(file);
-          importSuccesses.push(imported);
-        } catch (importError) {
-          importFailures.push({
-            fileName: String(file?.name || 'unknown-file').trim() || 'unknown-file',
-            message: importError instanceof Error ? importError.message : 'Import failed.',
-            details: Array.isArray(importError?.importErrorDetails)
-              ? importError.importErrorDetails
-                  .map((detail) => String(detail || '').trim())
-                  .filter(Boolean)
-              : [],
-          });
-        }
-      }
-
-      const importedFileCount = importSuccesses.length;
-      const totalFileCount = filesToImport.length;
-      const importedClassCount = importSuccesses.reduce((sum, entry) => sum + entry.parsedCourseCount, 0);
-      const importedSelectedCount = importSuccesses.reduce((sum, entry) => sum + entry.schedulableSelectedCount, 0);
-      const failureDetailLines = importFailures.flatMap((entry) => {
-        if (entry.details.length > 0) {
-          return entry.details.map((detail) => `${entry.fileName}: ${detail}`);
-        }
-        return [`${entry.fileName}: ${entry.message}`];
-      });
-
-      if (importFailures.length === 0) {
-        setImportStatus({
-          kind: 'success',
-          message: `Imported ${importedFileCount} file${importedFileCount === 1 ? '' : 's'} (${importedClassCount} class${importedClassCount === 1 ? '' : 'es'}). Auto-selected ${importedSelectedCount} schedulable class${importedSelectedCount === 1 ? '' : 'es'}.`,
-          details: [],
-        });
-        return;
-      }
-
-      if (importedFileCount > 0) {
-        const summary = `Import completed with errors. Imported ${importedFileCount} of ${totalFileCount} file${totalFileCount === 1 ? '' : 's'} (${importedClassCount} class${importedClassCount === 1 ? '' : 'es'}). Failed ${importFailures.length} file${importFailures.length === 1 ? '' : 's'}.`;
-        setImportStatus(null);
-        setError(buildImportFailureErrorMessage(summary, failureDetailLines));
-        return;
-      }
-
-      const allFailedMessage = `Import failed for ${totalFileCount} file${totalFileCount === 1 ? '' : 's'}.`;
-      setImportStatus(null);
-      setError(buildImportFailureErrorMessage(allFailedMessage, failureDetailLines));
-    } finally {
-      setIsImporting(false);
-    }
+    await importSpreadsheetFilesBatch(filesToImport);
   }
 
   function exportExtensionForFormat(format) {
@@ -4603,6 +4695,15 @@ function App() {
               </div>
             </>
           ) : null}
+        </div>
+      ) : null}
+
+      {isGlobalImportDragActive ? (
+        <div className="global-import-drop-overlay" role="presentation" aria-hidden="true">
+          <div className="global-import-drop-message">
+            <strong>Drop to Import</strong>
+            <p>Drop CSV/XLSX files anywhere to start import.</p>
+          </div>
         </div>
       ) : null}
 
