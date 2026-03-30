@@ -146,12 +146,12 @@ The advanced query search was implemented as a dedicated in-repo module (`src/se
 
 ## Versioning
 
-- Base tag format is `v<major>.<minor>` (example: `v0.4`).
+- Base tag format is `v<major>.<minor>` (example: `v0.5`).
 - UI version shown in the bottom-right is computed as:
   - `v<major>.<minor>-Build-<shortHash>`
-  - example: `v0.4-Build-b777fff`
+  - example: `v0.5-Build-b777fff`
   - when build number is available: `v<major>.<minor>-Build-<shortHash>-N<buildNumber>`
-  - example: `v0.4-Build-b777fff-N123`
+  - example: `v0.5-Build-b777fff-N123`
 - In shallow CI/build environments (such as some hosted builds), the version script attempts to fetch tags/history automatically before falling back.
 - You can override the base tag selection in CI/local with `APP_VERSION_BASE_TAG`.
 - You can provide hash context with `APP_BUILD_SHA`, `VITE_GIT_SHA`, `GITHUB_SHA`, `COMMIT_SHA`, `SOURCE_VERSION`, or `REVISION_ID`.
