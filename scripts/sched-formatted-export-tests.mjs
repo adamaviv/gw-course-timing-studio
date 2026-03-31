@@ -86,6 +86,10 @@ runCase('Meeting x room expansion maps scheduler timing and room fields', () => 
   assert(trRows.every((row) => row['End Time HHMM'] === '1225'), 'Expected TR rows end at 1225.');
   assert(rows.every((row) => row['Schedule Type Code'] === 'L'), 'Expected lecture schedule type code L.');
   assert(rows.every((row) => row['Schedule Type Desc'] === 'Lecture'), 'Expected lecture schedule type description.');
+  assert(rows.every((row) => row['Course Campus Code'] === '1'), 'Expected non-online campus code to normalize to 1.');
+  assert(rows.every((row) => row['Part of Term Code'] === '2'), 'Expected part of term code to be 2.');
+  assert(rows.every((row) => row['Print Ind'] === 'Y'), 'Expected Print Ind to always be Y.');
+  assert(rows.every((row) => row['Voice Response Regist Ind'] === 'Y'), 'Expected Voice Response Regist Ind to always be Y.');
   assert(rows.every((row) => row['Subject Code'] === 'CSCI'), 'Expected subject code CSCI.');
   assert(rows.every((row) => row['Course Number'] === '3212'), 'Expected numeric course number 3212.');
   assert(rows.every((row) => row.Building === 'SEH'), 'Expected building code parsed as SEH.');
@@ -190,6 +194,7 @@ runCase('Online campus rows use DIST instructional method', () => {
     },
   ]);
   assert(rows.length === 1, `Expected exactly one row, got ${rows.length}.`);
+  assert(rows[0]['Course Campus Code'] === '7', 'Expected online campus code to stay 7.');
   assert(rows[0]['Instructional Method'] === 'DIST', 'Expected instructional method DIST for online campus exports.');
 });
 

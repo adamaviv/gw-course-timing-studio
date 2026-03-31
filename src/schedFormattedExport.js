@@ -122,10 +122,6 @@ function isCancelledStatus(statusText) {
   return normalizeText(statusText).toUpperCase().includes('CANCEL');
 }
 
-function isDiscussionTitle(titleText) {
-  return /\bdiscussion\b/i.test(normalizeText(titleText));
-}
-
 function isLabSection(schemaRow) {
   return (
     normalizeText(schemaRow.relation_type).toLowerCase() === 'linked' ||
@@ -254,9 +250,6 @@ function inferScheduleType(schemaRow, hasMeetings) {
   if (isLabSection(schemaRow)) {
     return { sectionTitle: 'Laboratory', typeCode: 'H', typeDesc: 'Laboratory' };
   }
-  if (isDiscussionTitle(schemaRow.title)) {
-    return { sectionTitle: 'Discussion', typeCode: 'D', typeDesc: 'Discussion Group' };
-  }
   return { sectionTitle: '', typeCode: 'L', typeDesc: 'Lecture' };
 }
 
@@ -280,12 +273,20 @@ function resolveCourseLinkIdentifier(schemaRow) {
 }
 
 function resolveInstructionalMethod(frame) {
-  const campusId = normalizeText(frame?.campusId);
-  const campusLabel = normalizeText(frame?.campusLabel).toLowerCase();
-  if (campusId === '7' || campusLabel.includes('online')) {
+  if (isOnlineCampus(frame)) {
     return 'DIST';
   }
   return '';
+}
+
+function isOnlineCampus(frame) {
+  const campusId = normalizeText(frame?.campusId);
+  const campusLabel = normalizeText(frame?.campusLabel).toLowerCase();
+  return campusId === '7' || campusLabel.includes('online');
+}
+
+function resolveCourseCampusCode(frame) {
+  return isOnlineCampus(frame) ? '7' : '1';
 }
 
 function buildSchedRow({
@@ -309,7 +310,7 @@ function buildSchedRow({
     Course: normalizeText(schemaRow.title),
     'Section Title': scheduleType.sectionTitle,
     'Section Number': normalizeText(schemaRow.section),
-    'Course Campus Code': normalizeText(frame?.campusId),
+    'Course Campus Code': resolveCourseCampusCode(frame),
     'Course Campus Desc': normalizeText(frame?.campusLabel),
     'Schedule Type Code': scheduleType.typeCode,
     'Schedule Type Desc': scheduleType.typeDesc,
