@@ -4,6 +4,7 @@ process.env.NO_SERVER = '1';
 process.env.NODE_ENV = process.env.NODE_ENV || 'development';
 
 import net from 'node:net';
+import fs from 'node:fs/promises';
 import lzString from 'lz-string';
 
 const { compressToEncodedURIComponent } = lzString;
@@ -81,6 +82,34 @@ const MOCK_COURSES_BY_SUBJECT = {
       instructorDetails: [{ courseNumber: 'CSCI 1012', instructor: 'Taylor, J' }],
       titleDetails: [{ courseNumber: 'CSCI 1012', title: 'Introduction to Programming with Python' }],
       registrationDetails: [{ courseNumber: 'CSCI 1012', sections: ['10'], crns: ['54172'] }],
+    },
+    {
+      id: 'row-1-linked',
+      status: 'OPEN',
+      crn: '54320',
+      courseNumber: 'CSCI 1012',
+      subject: 'CSCI',
+      numeric: 1012,
+      section: '30',
+      title: 'Introduction to Programming with Python (lab)',
+      normalizedTitle: 'introduction to programming with python (lab)',
+      credits: '0.00',
+      instructor: 'Goldfrank, J',
+      room: 'ROME 196',
+      dayTimeRaw: 'W 03:45PM - 05:00PM',
+      dateRange: '08/24/26 - 12/08/26',
+      meetings: [
+        { day: 'W', dayName: 'Wednesday', startMin: 945, endMin: 1020, startLabel: '3:45 PM', endLabel: '5:00 PM' },
+      ],
+      meetingSignature: 'W:945-1020',
+      relationType: 'linked',
+      linkedParentCrn: '54172',
+      detailUrl: '',
+      scheduleDetails: ['Linked Section (Lab): Linked to CSCI 1012 Sec 10'],
+      commentDetails: [],
+      instructorDetails: [{ courseNumber: 'CSCI 1012', instructor: 'Goldfrank, J' }],
+      titleDetails: [{ courseNumber: 'CSCI 1012', title: 'Introduction to Programming with Python (lab)' }],
+      registrationDetails: [{ courseNumber: 'CSCI 1012', sections: ['30'], crns: ['54320'] }],
     },
     {
       id: 'row-2',
@@ -450,7 +479,7 @@ async function attachMockApiRoutes(context) {
 }
 
 async function createAuditedContext(browser) {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
   await attachMockApiRoutes(context);
   return context;
 }
@@ -500,6 +529,157 @@ async function assertStorageRecoveryScenario({ createContext, baseUrl, initScrip
 }
 
 const STEPS = [
+  {
+    description: 'Selected CSV export includes linked dependencies and round-trips via import without errors',
+    run: async ({ createContext, baseUrl }) => {
+      const context = await createContext();
+      const page = await context.newPage();
+      try {
+        const response = await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        assert(response && response.ok(), `Expected HTTP 200 from home page, got ${response?.status?.() ?? 'unknown'}.`);
+
+        await page.selectOption('#term-id', AUDIT_CONFIG.termId);
+        await page.selectOption('#campus-id', AUDIT_CONFIG.campusId);
+        await page.locator('#subject-id').fill(AUDIT_CONFIG.subjectId);
+
+        const parseRequest = page.waitForResponse(
+          (entry) => entry.url().includes('/api/parse-url') && entry.request().method() === 'POST',
+          { timeout: 60000 }
+        );
+        await page.getByRole('button', { name: /Load Classes|Add Subject/i }).click();
+        const parseResponse = await parseRequest;
+        assert(parseResponse.ok(), `Expected /api/parse-url to return HTTP 200, got ${parseResponse.status()}.`);
+
+        await page.locator('.workspace').waitFor({ timeout: 30000 });
+        await page.locator('.course-item').first().waitFor({ timeout: 15000 });
+
+        const parentCourseRow = page
+          .locator('.course-item')
+          .filter({ hasText: 'CSCI 1012' })
+          .filter({ hasNotText: '(lab)' })
+          .first();
+        await parentCourseRow.waitFor({ timeout: 15000 });
+        await parentCourseRow.locator('input[type="checkbox"]:not([disabled])').check();
+
+        await page.locator('input[name="export-format-main"]').first().check();
+        const exportButton = page.getByRole('button', { name: 'Export selected classes' });
+        await exportButton.waitFor({ timeout: 10000 });
+
+        const [download] = await Promise.all([
+          page.waitForEvent('download', { timeout: 20000 }),
+          exportButton.click(),
+        ]);
+        const filename = download.suggestedFilename();
+        assert(filename.toLowerCase().endsWith('.csv'), `Expected CSV export file, got "${filename}".`);
+        const downloadPath = await download.path();
+        assert(downloadPath, 'Expected CSV download path to be available.');
+
+        const csvText = await fs.readFile(downloadPath, 'utf8');
+        assert(
+          /,linked,54172,/.test(csvText),
+          'Expected selected CSV export to include linked dependency row with linked_parent_crn.'
+        );
+
+        const csvBuffer = await fs.readFile(downloadPath);
+        const csvBase64 = Buffer.from(csvBuffer).toString('base64');
+        await page.evaluate(({ droppedFileName, droppedMimeType, droppedBase64 }) => {
+          const binary = atob(droppedBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index += 1) {
+            bytes[index] = binary.charCodeAt(index);
+          }
+          const file = new File([bytes], droppedFileName, { type: droppedMimeType });
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          window.dispatchEvent(
+            new DragEvent('drop', {
+              bubbles: true,
+              cancelable: true,
+              dataTransfer,
+            })
+          );
+        }, {
+          droppedFileName: filename,
+          droppedMimeType: 'text/csv',
+          droppedBase64: csvBase64,
+        });
+
+        await page.locator('.import-status-success').waitFor({ timeout: 20000 });
+        const hasErrorBox = await page.locator('.error-box').isVisible().catch(() => false);
+        assert(!hasErrorBox, 'Expected no import error box after CSV roundtrip import.');
+      } finally {
+        await context.close();
+      }
+    },
+  },
+  {
+    description: 'Selected XLSX export round-trips via import without errors',
+    run: async ({ createContext, baseUrl }) => {
+      const context = await createContext();
+      const page = await context.newPage();
+      try {
+        const response = await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        assert(response && response.ok(), `Expected HTTP 200 from home page, got ${response?.status?.() ?? 'unknown'}.`);
+
+        await page.selectOption('#term-id', AUDIT_CONFIG.termId);
+        await page.selectOption('#campus-id', AUDIT_CONFIG.campusId);
+        await page.locator('#subject-id').fill(AUDIT_CONFIG.subjectId);
+
+        const parseRequest = page.waitForResponse(
+          (entry) => entry.url().includes('/api/parse-url') && entry.request().method() === 'POST',
+          { timeout: 60000 }
+        );
+        await page.getByRole('button', { name: /Load Classes|Add Subject/i }).click();
+        const parseResponse = await parseRequest;
+        assert(parseResponse.ok(), `Expected /api/parse-url to return HTTP 200, got ${parseResponse.status()}.`);
+
+        await page.locator('.workspace').waitFor({ timeout: 30000 });
+        await page.locator('.course-item input[type="checkbox"]:not([disabled])').first().check();
+
+        await page.locator('input[name="export-format-main"]').nth(1).check();
+        const exportButton = page.getByRole('button', { name: 'Export selected classes' });
+
+        const [download] = await Promise.all([
+          page.waitForEvent('download', { timeout: 20000 }),
+          exportButton.click(),
+        ]);
+        const filename = download.suggestedFilename();
+        assert(filename.toLowerCase().endsWith('.xlsx'), `Expected XLSX export file, got "${filename}".`);
+        const downloadPath = await download.path();
+        assert(downloadPath, 'Expected XLSX download path to be available.');
+
+        const xlsxBuffer = await fs.readFile(downloadPath);
+        const xlsxBase64 = Buffer.from(xlsxBuffer).toString('base64');
+        await page.evaluate(({ droppedFileName, droppedMimeType, droppedBase64 }) => {
+          const binary = atob(droppedBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index += 1) {
+            bytes[index] = binary.charCodeAt(index);
+          }
+          const file = new File([bytes], droppedFileName, { type: droppedMimeType });
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          window.dispatchEvent(
+            new DragEvent('drop', {
+              bubbles: true,
+              cancelable: true,
+              dataTransfer,
+            })
+          );
+        }, {
+          droppedFileName: filename,
+          droppedMimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          droppedBase64: xlsxBase64,
+        });
+
+        await page.locator('.import-status-success').waitFor({ timeout: 20000 });
+        const hasErrorBox = await page.locator('.error-box').isVisible().catch(() => false);
+        assert(!hasErrorBox, 'Expected no import error box after XLSX roundtrip import.');
+      } finally {
+        await context.close();
+      }
+    },
+  },
   {
     description: 'Storage recovery button appears for mangled or out-of-sync local storage and clears state',
     run: async ({ createContext, baseUrl }) => {

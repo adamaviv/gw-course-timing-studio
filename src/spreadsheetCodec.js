@@ -143,55 +143,6 @@ function stringifyCrnList(crns) {
   return [...new Set((crns ?? []).map((value) => normalizeDigits(value)).filter(Boolean))].sort().join('|');
 }
 
-function extractCourseLevelNumbers(courseNumberText) {
-  const text = normalizeText(courseNumberText);
-  const matches = [...text.matchAll(/(\d{4})(?:[A-Z])?/gi)];
-  return matches
-    .map((match) => Number.parseInt(match[1], 10))
-    .filter((value) => Number.isFinite(value));
-}
-
-function parseSectionNumber(sectionText) {
-  const match = normalizeText(sectionText).match(/(\d{1,3})/);
-  if (!match) {
-    return null;
-  }
-  return Number.parseInt(match[1], 10);
-}
-
-function validateSectionBandForCourse(row, rowNumber, errors) {
-  const sectionNumber = parseSectionNumber(row.section);
-  if (!Number.isFinite(sectionNumber)) {
-    return;
-  }
-
-  const levelNumbers = extractCourseLevelNumbers(row.course_number);
-  if (levelNumbers.length === 0) {
-    return;
-  }
-
-  const hasUndergraduateLevel = levelNumbers.some((value) => value >= 1000 && value <= 4999);
-  const hasGraduateLevel = levelNumbers.some((value) => value >= 6000);
-
-  if (hasUndergraduateLevel && (sectionNumber < 10 || sectionNumber >= 80)) {
-    addError(
-      errors,
-      rowNumber,
-      'section',
-      `Undergraduate (1000-4999) sections should be in the 10-79 range. Found: ${row.section}`
-    );
-  }
-
-  if (hasGraduateLevel && sectionNumber < 80) {
-    addError(
-      errors,
-      rowNumber,
-      'section',
-      `Graduate (6000+) sections should start at 80. Found: ${row.section}`
-    );
-  }
-}
-
 export function generateDeterministicPseudoCrn(seed, usedCrns) {
   const used = usedCrns instanceof Set ? usedCrns : new Set();
   const normalizedSeed = normalizeText(seed) || 'seed';
@@ -540,8 +491,6 @@ function normalizeDataRow(rawRow, headerColumns, rowNumber, errors) {
     row.crosslist_group = normalizeText(row.crosslist_group);
     row.crosslist_crns = '';
   }
-
-  validateSectionBandForCourse(row, rowNumber, errors);
 
   return row;
 }

@@ -138,25 +138,19 @@ runCase('Cross-listed group validation enforces multi-row group and matching CRN
   );
 });
 
-runCase('Section ranges enforce undergraduate 10-79 and graduate 80+', () => {
+runCase('Section values are accepted across institutional numbering variants', () => {
   const csv = buildCsv(
     Object.entries(buildBaseMeta()),
     [
       'uid-1,54172,CSCI 1012,05,Intro,OPEN,3.00,Taylor,ROME 195,08/24/26 - 12/08/26,M 3:45 PM-5:00 PM,primary,,,,,,,,',
       'uid-2,54173,CSCI 6366,30,Grad Topic,OPEN,3.00,Aviv,SEH 101,08/24/26 - 12/08/26,TR 2:00 PM-3:15 PM,primary,,,,,,,,',
+      'uid-3,54174,CSCI 4366,80,UG Crosslist Variant,OPEN,3.00,Aviv,SEH 101,08/24/26 - 12/08/26,TR 2:00 PM-3:15 PM,cross-listed,,grp-1,54174|54175,,,,,,',
+      'uid-4,54175,CSCI 6366,10,Grad Crosslist Variant,OPEN,3.00,Aviv,SEH 101,08/24/26 - 12/08/26,TR 2:00 PM-3:15 PM,cross-listed,,grp-1,54174|54175,,,,,,',
     ]
   );
 
   const parsed = parseSpreadsheetCsv(csv);
-  assert(!parsed.ok, 'Expected section-band validation to fail.');
-  assert(
-    parsed.errors.some((error) => String(error.column) === 'section' && String(error.message).includes('10-79')),
-    'Expected undergrad section band error.'
-  );
-  assert(
-    parsed.errors.some((error) => String(error.column) === 'section' && String(error.message).includes('start at 80')),
-    'Expected graduate section band error.'
-  );
+  assert(parsed.ok, `Expected parse to succeed for valid data. Errors: ${JSON.stringify(parsed.errors)}`);
 });
 
 runCase('Meeting parser/formatter supports multi-block patterns', () => {
