@@ -408,8 +408,10 @@ function instructorByCourseNumber(course) {
   return mapping;
 }
 
-function rowsForCourseExport(course, frameSubjectId) {
+function rowsForCourseExport(course, frameSubjectId, options = {}) {
   const relationType = normalizeRelationTypeForExport(course.relationType);
+  const includedCrnSet = options.includedCrnSet instanceof Set ? options.includedCrnSet : null;
+  const normalizeDanglingRelations = Boolean(options.normalizeDanglingRelations);
   const registration = registrationDetailsForCourse(course);
   const commentsLookup = commentsByCourseNumber(course);
   const titleLookup = titleByCourseNumber(course);
@@ -428,6 +430,31 @@ function rowsForCourseExport(course, frameSubjectId) {
   const linkedParentCrn = relationType === 'linked' ? String(course.linkedParentCrn || '').trim() : '';
   const externalSource = String(course.externalSource || '').trim();
   const importAction = course.importAction && typeof course.importAction === 'object' ? course.importAction : {};
+  let effectiveRelationType = relationType;
+  let effectiveLinkedParentCrn = linkedParentCrn;
+  let effectiveCrosslistGroup = crosslistGroup;
+  let effectiveCrosslistCrns = crosslistCrns;
+
+  if (normalizeDanglingRelations && includedCrnSet) {
+    if (
+      relationType === 'linked' &&
+      (!effectiveLinkedParentCrn || !includedCrnSet.has(effectiveLinkedParentCrn))
+    ) {
+      effectiveRelationType = 'primary';
+      effectiveLinkedParentCrn = '';
+    }
+
+    if (relationType === 'cross-listed') {
+      const crosslistCrnList = [...new Set(allCrns.filter(Boolean))];
+      const hasAtLeastTwo = crosslistCrnList.length >= 2;
+      const hasAllMembers = crosslistCrnList.every((crn) => includedCrnSet.has(crn));
+      if (!hasAtLeastTwo || !hasAllMembers) {
+        effectiveRelationType = 'primary';
+        effectiveCrosslistGroup = '';
+        effectiveCrosslistCrns = '';
+      }
+    }
+  }
 
   const rows = [];
   let rowOrdinal = 1;
@@ -455,10 +482,10 @@ function rowsForCourseExport(course, frameSubjectId) {
         room,
         date_range: dateRange,
         meeting_pattern: meetingPattern,
-        relation_type: relationType,
-        linked_parent_crn: linkedParentCrn,
-        crosslist_group: crosslistGroup,
-        crosslist_crns: crosslistCrns,
+        relation_type: effectiveRelationType,
+        linked_parent_crn: effectiveLinkedParentCrn,
+        crosslist_group: effectiveCrosslistGroup,
+        crosslist_crns: effectiveCrosslistCrns,
         comment: commentText,
         action_required: String(importAction.required || '').trim(),
         action_status: String(importAction.status || '').trim(),
@@ -483,10 +510,10 @@ function rowsForCourseExport(course, frameSubjectId) {
       room,
       date_range: dateRange,
       meeting_pattern: meetingPattern,
-      relation_type: relationType,
-      linked_parent_crn: linkedParentCrn,
-      crosslist_group: crosslistGroup,
-      crosslist_crns: crosslistCrns,
+      relation_type: effectiveRelationType,
+      linked_parent_crn: effectiveLinkedParentCrn,
+      crosslist_group: effectiveCrosslistGroup,
+      crosslist_crns: effectiveCrosslistCrns,
       comment: '',
       action_required: String(importAction.required || '').trim(),
       action_status: String(importAction.status || '').trim(),
@@ -2964,6 +2991,63 @@ function App() {
     });
   }
 
+  function expandCoursesForRoundtripExport(frameCourses, selectedFrameCourses) {
+    const frameCourseList = Array.isArray(frameCourses) ? frameCourses : [];
+    const selectedList = Array.isArray(selectedFrameCourses) ? selectedFrameCourses : [];
+    const byId = new Map(frameCourseList.map((course) => [course.id, course]));
+    const expandedIds = new Set(selectedList.map((course) => course.id));
+    const queue = [...expandedIds];
+
+    function enqueueCourse(courseId) {
+      if (!courseId || expandedIds.has(courseId) || !byId.has(courseId)) {
+        return;
+      }
+      expandedIds.add(courseId);
+      queue.push(courseId);
+    }
+
+    while (queue.length > 0) {
+      const courseId = queue.shift();
+      const course = byId.get(courseId);
+      if (!course) {
+        continue;
+      }
+
+      if (course.relationType === 'linked') {
+        const parentId = linkedParentIdByChildId.get(course.id);
+        enqueueCourse(parentId);
+      } else {
+        const linkedChildren = linkedChildrenByParentId.get(course.id) ?? [];
+        for (const childCourse of linkedChildren) {
+          enqueueCourse(childCourse.id);
+        }
+      }
+
+      if (normalizeRelationTypeForExport(course.relationType) === 'cross-listed') {
+        const groupId = String(course.structuredCrosslistGroup || '').trim();
+        const courseCrns = new Set(crnSetForCourse(course));
+        for (const candidate of frameCourseList) {
+          if (candidate.id === course.id || normalizeRelationTypeForExport(candidate.relationType) !== 'cross-listed') {
+            continue;
+          }
+          const candidateGroupId = String(candidate.structuredCrosslistGroup || '').trim();
+          if (groupId && candidateGroupId && groupId === candidateGroupId) {
+            enqueueCourse(candidate.id);
+            continue;
+          }
+          if (!groupId || !candidateGroupId) {
+            const candidateCrns = crnSetForCourse(candidate);
+            if (candidateCrns.some((crn) => courseCrns.has(crn))) {
+              enqueueCourse(candidate.id);
+            }
+          }
+        }
+      }
+    }
+
+    return frameCourseList.filter((course) => expandedIds.has(course.id));
+  }
+
   async function buildFrameExportArtifact(frame, frameCourses, options = {}) {
     const format = normalizeExportFormat(options.format || exportFormat);
     const scopeToken = sanitizeExportToken(options.scope || 'all', 'all');
@@ -2973,8 +3057,17 @@ function App() {
     const sourceToken = frame.sourceType === 'import' ? '-import' : '';
     const extension = exportExtensionForFormat(format);
     const filename = `gw-course-studio-${subjectToken}-${termToken}-${campusToken}${sourceToken}-${scopeToken}.${extension}`;
+    const includedCrnSet = new Set(
+      (frameCourses ?? [])
+        .flatMap((course) => crnSetForCourse(course))
+        .map((crn) => String(crn || '').trim())
+        .filter(Boolean)
+    );
     const serializedRows = sortedCoursesForExport(frameCourses).flatMap((course) =>
-      rowsForCourseExport(course, frame.subjectId)
+      rowsForCourseExport(course, frame.subjectId, {
+        includedCrnSet,
+        normalizeDanglingRelations: true,
+      })
     );
 
     const meta = {
@@ -3056,12 +3149,13 @@ function App() {
       if (!frame) {
         continue;
       }
+      const roundtripExpandedCourses = expandCoursesForRoundtripExport(frame.courses, frameCourses);
       artifacts.push(
-        await buildFrameExportArtifact(frame, frameCourses, {
+        await buildFrameExportArtifact(frame, roundtripExpandedCourses, {
           format: normalizedFormat,
           scope: 'selected',
           scopeLabel: 'Selected Rows',
-          comment: `Exported ${frameCourses.length} selected schedulable class(es) from this frame.`,
+          comment: `Exported ${frameCourses.length} selected schedulable class(es); included ${roundtripExpandedCourses.length} row(s) after linked/cross-list dependency expansion.`,
         })
       );
     }
@@ -3076,9 +3170,12 @@ function App() {
   async function exportFrameRows(frame, options = {}) {
     const normalizedFormat = normalizeExportFormat(options.format || exportFormat);
     const selectedOnly = Boolean(options.selectedOnly);
-    const frameCourses = selectedOnly
+    const selectedFrameCourses = selectedOnly
       ? frame.courses.filter((course) => selectedIds.has(course.id) && isSchedulableCourse(course))
       : [...frame.courses];
+    const frameCourses = selectedOnly
+      ? expandCoursesForRoundtripExport(frame.courses, selectedFrameCourses)
+      : selectedFrameCourses;
 
     if (frameCourses.length === 0) {
       throw new Error(selectedOnly ? 'No selected schedulable rows in this frame to export.' : 'No rows in this frame to export.');
@@ -3089,7 +3186,7 @@ function App() {
       scope: selectedOnly ? 'selected' : 'all',
       scopeLabel: selectedOnly ? 'Selected Rows' : 'All Rows',
       comment: selectedOnly
-        ? `Exported selected schedulable classes from ${frame.subjectLabel}.`
+        ? `Exported ${selectedFrameCourses.length} selected schedulable class(es) from ${frame.subjectLabel}; included ${frameCourses.length} row(s) after linked/cross-list dependency expansion.`
         : `Exported all rows from ${frame.subjectLabel}.`,
     });
     downloadExportArtifacts([artifact], normalizedFormat, artifact.filename);
