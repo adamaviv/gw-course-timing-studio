@@ -6,6 +6,7 @@ process.env.NODE_ENV = process.env.NODE_ENV || 'development';
 import net from 'node:net';
 import fs from 'node:fs/promises';
 import lzString from 'lz-string';
+import { unzipSync } from 'fflate';
 
 const { compressToEncodedURIComponent } = lzString;
 
@@ -675,6 +676,118 @@ const STEPS = [
         await page.locator('.import-status-success').waitFor({ timeout: 20000 });
         const hasErrorBox = await page.locator('.error-box').isVisible().catch(() => false);
         assert(!hasErrorBox, 'Expected no import error box after XLSX roundtrip import.');
+      } finally {
+        await context.close();
+      }
+    },
+  },
+  {
+    description: 'Sched-Formatted export works for global, frame-level, and multi-frame ZIP flows',
+    run: async ({ createContext, baseUrl }) => {
+      const context = await createContext();
+      const page = await context.newPage();
+      try {
+        const response = await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        assert(response && response.ok(), `Expected HTTP 200 from home page, got ${response?.status?.() ?? 'unknown'}.`);
+
+        await page.selectOption('#term-id', AUDIT_CONFIG.termId);
+        await page.selectOption('#campus-id', AUDIT_CONFIG.campusId);
+        await page.locator('#subject-id').fill('CSCI');
+
+        const firstParseRequest = page.waitForResponse(
+          (entry) => entry.url().includes('/api/parse-url') && entry.request().method() === 'POST',
+          { timeout: 60000 }
+        );
+        await page.getByRole('button', { name: /Load Classes|Add Subject/i }).click();
+        const firstParseResponse = await firstParseRequest;
+        assert(firstParseResponse.ok(), `Expected /api/parse-url to return HTTP 200, got ${firstParseResponse.status()}.`);
+
+        await page.locator('.workspace').waitFor({ timeout: 30000 });
+        await page.locator('.course-item input[type="checkbox"]:not([disabled])').first().check();
+
+        await page.locator('input[name="export-format-main"]').nth(2).check();
+
+        const toolsExportButton = page.getByRole('button', { name: 'Export selected classes' });
+        const [toolsDownload] = await Promise.all([
+          page.waitForEvent('download', { timeout: 20000 }),
+          toolsExportButton.click(),
+        ]);
+        const toolsFilename = toolsDownload.suggestedFilename();
+        assert(
+          toolsFilename.toLowerCase().endsWith('-sched-formatted.xlsx'),
+          `Expected sched-formatted XLSX export file, got "${toolsFilename}".`
+        );
+        const toolsDownloadPath = await toolsDownload.path();
+        assert(toolsDownloadPath, 'Expected sched-formatted tools export download path.');
+
+        const exceljsModule = await import('exceljs');
+        const ExcelJs = exceljsModule.default || exceljsModule;
+        const workbook = new ExcelJs.Workbook();
+        await workbook.xlsx.load(await fs.readFile(toolsDownloadPath));
+        const header = workbook.worksheets[0].getRow(1).values.slice(1).map((value) => String(value ?? '').trim());
+        assert(header.length === 61, `Expected sched-formatted header length 61, got ${header.length}.`);
+        assert(header[0] === 'Course Term Code', 'Expected sched-formatted first header column.');
+        assert(header[60] === 'Course Link Identifier', 'Expected sched-formatted last header column.');
+
+        const csciFrame = page
+          .locator('.subject-frame:not(.selected-frame)')
+          .filter({ has: page.getByRole('heading', { name: /CSCI|Computer Science/i }) })
+          .first();
+        await csciFrame.waitFor({ timeout: 15000 });
+
+        const [frameAllDownload] = await Promise.all([
+          page.waitForEvent('download', { timeout: 20000 }),
+          csciFrame.getByRole('button', { name: 'Export All' }).click(),
+        ]);
+        const frameAllFilename = frameAllDownload.suggestedFilename();
+        assert(
+          frameAllFilename.toLowerCase().endsWith('-sched-formatted.xlsx'),
+          `Expected frame all sched-formatted XLSX file, got "${frameAllFilename}".`
+        );
+
+        const [frameSelectedDownload] = await Promise.all([
+          page.waitForEvent('download', { timeout: 20000 }),
+          csciFrame.getByRole('button', { name: 'Export Selected' }).click(),
+        ]);
+        const frameSelectedFilename = frameSelectedDownload.suggestedFilename();
+        assert(
+          frameSelectedFilename.toLowerCase().endsWith('-sched-formatted.xlsx'),
+          `Expected frame selected sched-formatted XLSX file, got "${frameSelectedFilename}".`
+        );
+
+        await page.locator('#subject-id').fill('ECE');
+        const secondParseRequest = page.waitForResponse(
+          (entry) => entry.url().includes('/api/parse-url') && entry.request().method() === 'POST',
+          { timeout: 60000 }
+        );
+        await page.getByRole('button', { name: /Load Classes|Add Subject/i }).click();
+        const secondParseResponse = await secondParseRequest;
+        assert(secondParseResponse.ok(), `Expected /api/parse-url for ECE to return HTTP 200, got ${secondParseResponse.status()}.`);
+
+        const eceFrame = page
+          .locator('.subject-frame:not(.selected-frame)')
+          .filter({ has: page.getByRole('heading', { name: /ECE|Electrical/i }) })
+          .first();
+        await eceFrame.waitFor({ timeout: 15000 });
+        await eceFrame.locator('.course-item input[type="checkbox"]:not([disabled])').first().check();
+
+        const [zipDownload] = await Promise.all([
+          page.waitForEvent('download', { timeout: 20000 }),
+          toolsExportButton.click(),
+        ]);
+        const zipFilename = zipDownload.suggestedFilename();
+        assert(zipFilename.toLowerCase().endsWith('.zip'), `Expected ZIP export for multi-frame sched format, got "${zipFilename}".`);
+        const zipPath = await zipDownload.path();
+        assert(zipPath, 'Expected ZIP download path.');
+
+        const zipBytes = await fs.readFile(zipPath);
+        const unzipped = unzipSync(new Uint8Array(zipBytes));
+        const zipEntries = Object.keys(unzipped);
+        assert(zipEntries.length >= 2, `Expected >= 2 files in sched-format ZIP export, got ${zipEntries.length}.`);
+        assert(
+          zipEntries.every((entryName) => entryName.toLowerCase().endsWith('-sched-formatted.xlsx')),
+          `Expected sched-formatted XLSX entries in ZIP, got: ${zipEntries.join(', ')}`
+        );
       } finally {
         await context.close();
       }

@@ -5,6 +5,7 @@ import { sanitizeDetailUrl } from '../shared/detailUrl.js';
 import { getRecoveryReloadHint } from '../shared/recoveryHints.js';
 import { buildCourseWarnings } from './courseWarnings.js';
 import { buildImportedCoursesFromSpreadsheetRows } from './importedFrameMapper.js';
+import { buildSchedFormattedRows, serializeSchedFormattedXlsx } from './schedFormattedExport.js';
 import {
   extractNormalizedCourseNumbers,
   matchesParsedCourseSearchQuery,
@@ -107,6 +108,7 @@ const IMPORT_STATUS_RESET_MS = 8000;
 const EXPORT_STATUS_RESET_MS = 8000;
 const EXPORT_FORMAT_CSV = 'csv';
 const EXPORT_FORMAT_XLSX = 'xlsx';
+const EXPORT_FORMAT_SCHED = 'sched-formatted';
 
 function normalizeSubjectIdValue(value) {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -2272,7 +2274,12 @@ function App() {
   const canPrint = printCourses.length > 0 && (printIncludeCalendar || printIncludeSelectedList);
   const canShare = selectedCourses.length > 0;
   const canExportSelected = selectedCourses.length > 0;
-  const exportFormatLabel = exportFormat === EXPORT_FORMAT_XLSX ? 'XLSX' : 'CSV';
+  const exportFormatLabel =
+    exportFormat === EXPORT_FORMAT_XLSX
+      ? 'XLSX'
+      : exportFormat === EXPORT_FORMAT_SCHED
+        ? 'Sched-Formatted (XLSX)'
+        : 'CSV';
   const canSaveState = subjectFrames.length > 0;
   function courseCampusLabel(course) {
     return (
@@ -2950,17 +2957,23 @@ function App() {
   }
 
   function exportExtensionForFormat(format) {
-    return format === EXPORT_FORMAT_XLSX ? 'xlsx' : 'csv';
+    return format === EXPORT_FORMAT_XLSX || format === EXPORT_FORMAT_SCHED ? 'xlsx' : 'csv';
   }
 
   function exportMimeTypeForFormat(format) {
-    return format === EXPORT_FORMAT_XLSX
+    return format === EXPORT_FORMAT_XLSX || format === EXPORT_FORMAT_SCHED
       ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
       : 'text/csv;charset=utf-8';
   }
 
   function normalizeExportFormat(format) {
-    return format === EXPORT_FORMAT_XLSX ? EXPORT_FORMAT_XLSX : EXPORT_FORMAT_CSV;
+    if (format === EXPORT_FORMAT_XLSX) {
+      return EXPORT_FORMAT_XLSX;
+    }
+    if (format === EXPORT_FORMAT_SCHED) {
+      return EXPORT_FORMAT_SCHED;
+    }
+    return EXPORT_FORMAT_CSV;
   }
 
   function downloadBytes(filename, bytes, mimeType) {
@@ -3056,7 +3069,9 @@ function App() {
     const termToken = sanitizeExportToken(frame.termId || termId || 'term', 'term');
     const sourceToken = frame.sourceType === 'import' ? '-import' : '';
     const extension = exportExtensionForFormat(format);
-    const filename = `gw-course-studio-${subjectToken}-${termToken}-${campusToken}${sourceToken}-${scopeToken}.${extension}`;
+    const filenameBase = `gw-course-studio-${subjectToken}-${termToken}-${campusToken}${sourceToken}-${scopeToken}`;
+    const filename =
+      format === EXPORT_FORMAT_SCHED ? `${filenameBase}-sched-formatted.${extension}` : `${filenameBase}.${extension}`;
     const includedCrnSet = new Set(
       (frameCourses ?? [])
         .flatMap((course) => crnSetForCourse(course))
@@ -3085,6 +3100,14 @@ function App() {
       frame.sourceType === 'import' ? `Source frame: ${String(frame.sourceLabel || 'Imported Spreadsheet').trim()}` : '',
       options.comment || '',
     ].filter(Boolean);
+
+    if (format === EXPORT_FORMAT_SCHED) {
+      const schedRows = buildSchedFormattedRows(frame, serializedRows);
+      const bytes = await serializeSchedFormattedXlsx(schedRows, {
+        sheetName: 'Export',
+      });
+      return { filename, bytes, mimeType: exportMimeTypeForFormat(format) };
+    }
 
     if (format === EXPORT_FORMAT_XLSX) {
       const bytes = await serializeSpreadsheetXlsx({
@@ -4894,6 +4917,15 @@ function App() {
                         onChange={() => setExportFormat(EXPORT_FORMAT_XLSX)}
                       />
                       XLSX
+                    </label>
+                    <label className="export-format-toggle">
+                      <input
+                        type="radio"
+                        name="export-format-main"
+                        checked={exportFormat === EXPORT_FORMAT_SCHED}
+                        onChange={() => setExportFormat(EXPORT_FORMAT_SCHED)}
+                      />
+                      Sched-Formatted (XLSX)
                     </label>
                   </div>
                   <p className="export-note">Exports selected classes by frame; multi-frame exports download as ZIP.</p>
