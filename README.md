@@ -26,6 +26,9 @@ See the full license text in [`LICENSE`](LICENSE).
   - removable subject frame
   - double-click collapse/expand
 - Dedicated `Selected` frame that mirrors all currently selected classes.
+- Export options:
+  - schema-v1 `CSV` and `XLSX` (round-trip import/export format)
+  - `Sched-Formatted (XLSX)` for GW Scheduler-compatible columns (best-effort mapping)
 - Course calendar with:
   - fixed 8:00 AM to 10:00 PM grid
   - week view + single-day focus toggle
@@ -135,6 +138,7 @@ Supported settings:
 - `npm run build`: build frontend assets.
 - `npm start`: start production server (expects `dist/` to exist).
 - `npm run test:search-dsl`: run unit-style tests for the advanced search DSL parser/matcher.
+- `npm run test:sched-formatted-export`: run unit-style tests for the GW scheduler-formatted export mapper.
 - `npm test`: run dependency audit + all security phases (`test:security-phase1` ... `test:security-phase10`, `test:security-phase12`).
 - `npm run test:security-deps`: run production dependency audit gate (`npm audit --omit=dev --audit-level=high`).
 - `npm run test:usability`: run search DSL tests + Playwright-based usability audit.
