@@ -42,6 +42,12 @@ const FRAME = {
   campusLabel: 'Main Campus',
   subjectId: 'CSCI',
 };
+const ONLINE_FRAME = {
+  termId: '202603',
+  campusId: '7',
+  campusLabel: 'Online Courses',
+  subjectId: 'CSCI',
+};
 
 runCase('Header has exactly 61 columns in GW scheduler order', () => {
   assert(SCHED_FORMAT_COLUMNS.length === 61, `Expected 61 columns, got ${SCHED_FORMAT_COLUMNS.length}.`);
@@ -161,6 +167,30 @@ runCase('Derived schedule type and relation fields map correctly', () => {
   assert(selfPaced['Weekly Meeting Pattern'] === '', 'Expected no-meeting row weekly pattern blank.');
   assert(selfPaced.Building === '### - None', 'Expected missing building fallback.');
   assert(selfPaced.Room === '### - None', 'Expected missing room fallback.');
+});
+
+runCase('Online campus rows use DIST instructional method', () => {
+  const rows = buildSchedFormattedRows(ONLINE_FRAME, [
+    {
+      course_number: 'CSCI 2401W',
+      crn: '54500',
+      title: 'Data Structures',
+      section: '11',
+      status: 'OPEN',
+      credits: '3.00',
+      instructor: 'Goldfrank, J',
+      room: '',
+      date_range: '08/24/26 - 12/08/26',
+      meeting_pattern: 'TR 10:00 AM-11:15 AM',
+      relation_type: 'primary',
+      linked_parent_crn: '',
+      crosslist_group: '',
+      crosslist_crns: '',
+      comment: '',
+    },
+  ]);
+  assert(rows.length === 1, `Expected exactly one row, got ${rows.length}.`);
+  assert(rows[0]['Instructional Method'] === 'DIST', 'Expected instructional method DIST for online campus exports.');
 });
 
 await runCaseAsync('Serialized Sched-Formatted XLSX opens and keeps expected header/values', async () => {

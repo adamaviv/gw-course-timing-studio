@@ -279,6 +279,15 @@ function resolveCourseLinkIdentifier(schemaRow) {
   return normalizeDigits(schemaRow.linked_parent_crn);
 }
 
+function resolveInstructionalMethod(frame) {
+  const campusId = normalizeText(frame?.campusId);
+  const campusLabel = normalizeText(frame?.campusLabel).toLowerCase();
+  if (campusId === '7' || campusLabel.includes('online')) {
+    return 'DIST';
+  }
+  return '';
+}
+
 function buildSchedRow({
   frame,
   schemaRow,
@@ -304,7 +313,7 @@ function buildSchedRow({
     'Course Campus Desc': normalizeText(frame?.campusLabel),
     'Schedule Type Code': scheduleType.typeCode,
     'Schedule Type Desc': scheduleType.typeDesc,
-    'Instructional Method': '',
+    'Instructional Method': resolveInstructionalMethod(frame),
     'Grade Mode Code': 'C',
     'Grade Mode Desc': 'Letter Grade',
     'Session Code': '2',
